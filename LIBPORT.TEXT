@@ -929,7 +929,7 @@ IMPLEMENTATION
         IF errno <> 0 THEN Exit(TimedRead);
 
         { Block for up to specified number of seconds }
-        cparm.dccode := 14;  { No symbolic namde }
+        cparm.dccode := 14;  { No symbolic name }
         cparm.dcdata[0] := secs;
         Device_Control(errno, port_path, cparm);
         IF errno <> 0 THEN Exit(TimedRead);
