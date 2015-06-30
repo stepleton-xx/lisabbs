@@ -1,0 +1,438 @@
+kSoh    .EQU    $1              ; YModem packet has 128 bytes of data.
+kStx    .EQU    $2              ; YModem packed has 1024 bytes of data.
+
+kTDelta .EQU    $81C94B00       ; Seconds from 1/1/1901 to 1/1/1970 (at 00:00).
+
+
+; FUNCTION MemSet(VAR data: YModemBuffer; value: Byte;
+;                 offset, count: Integer): Longint;
+; EASy68K checked.
+
+.FUNC   MemSet
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.W  (A7)+,D0        ; Number of bytes to set.
+        SUB.L   A1,A1           ; Clear destination start address.
+        MOVE.W  (A7)+,A1        ; Copy offset into start address.
+        MOVE.B  (A7)+,D1        ; Byte to copy into all buffer locations.
+        ADDA.L  (A7)+,A1        ; Add buffer beginning to start address.
+
+        SUB.W   #1,D0           ;   Prepare num. bytes to be a loop counter.
+@1      MOVE.B  D1,(A1)+        ;   Copy into A1 referent byte; increment A1.
+        DBRA    D0,@1           ;   Next iteration of loop.
+
+done    MOVE.L  A1,(A7)         ; Place next location on stack.
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'MEMSET  '              ; Function name for the debugger.
+
+
+; FUNCTION MemCpy(src: Longint; VAR dest: YModemBuffer;
+;                 offset, count: Integer): Longint;
+; EASy68K checked.
+
+.FUNC   MemCpy
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.W  (A7)+,D0        ; Number of bytes to copy.
+        SUB.L   A1,A1           ; Clear destination start address.
+        MOVE.W  (A7)+,A1        ; Copy offset into destination start address.
+        ADDA.L  (A7)+,A1        ; Add buffer beginning to dest. start address.
+        MOVE.L  A2,D1           ; Save scratch register A2.
+        MOVE.L  (A7)+,A2        ; Copy source start address.
+
+        SUB.W   #1,D0           ;   Prepare num. bytes to be a loop counter.
+@1      MOVE.B  (A2)+,(A1)+     ;   Copy byte; increment both addresses.
+        DBRA    D0,@1           ;   Next iteration of loop.
+
+        MOVE.L  D1,A2           ; Restore scratch register A2.
+        MOVE.L  A1,(A7)         ; Place next location on stack.
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'MEMCPY  '              ; Function name for the debugger.
+
+
+; FUNCTION CalcCrc(data: YModemBuffer; offset, count: Integer): Integer;
+; EASy68K checked.
+
+.FUNC   CalcCrc
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.W  (A7)+,D0        ; Size of the input data.
+        SUB.L   A1,A1           ; Clear input data start address.
+        MOVE.W  (A7)+,A1        ; Copy offset into start address.
+        ADDA.L  (A7)+,A1        ; Add buffer beginning to start address.
+
+        MOVE.L  #0,D1           ; Init CRC in D1.
+        TST.W   D0              ; Is the input empty?
+        BEQ     done            ; If so, skip to the end.
+
+        SUB.W   #1,D0           ;   Prepare data size to be a loop counter.
+outer   MOVE.L  #0,D2           ;   Clear D2, where we'll do the left shift.
+        MOVE.B  (A1)+,D2        ;   Copy A1 referent byte to D2; increment A1.
+        LSL.W   #8,D2           ;   Left-shift D2 by eight bits.
+        EOR.W   D2,D1           ;   XOR it with the CRC.
+
+        MOVE.L  #7,D2           ;     Place 7 in D2, for looping 8 times.
+inner   LSL.L   #1,D1           ;     Left-shift CRC one bit.
+        BTST    #16,D1          ;     See if bit 0x10000 is set in the CRC.
+        BEQ     @1              ;     If not, skip the next line.
+        EORI.W  #$1021,D1       ;     XOR 0x1021 with the CRC.
+@1      DBRA    D2,inner        ;     Next iteration of inner loop.
+
+        DBRA    D0,outer        ;   Next iteration of outer loop.
+
+done    MOVE.W  D1,(A7)         ; Place calculated CRC on the stack.
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'CALCCRC '              ; Function name for the debugger.
+
+
+; FUNCTION CalcCsum(data: YModemBuffer; offset, count: Integer): Byte;
+; EASy68K checked.
+
+.FUNC   CalcCsum
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.W  (A7)+,D0        ; Size of the input data.
+        SUB.L   A1,A1           ; Clear input data start address.
+        MOVE.W  (A7)+,A1        ; Copy offset into start address.
+        ADDA.L  (A7)+,A1        ; Add buffer beginning to start address.
+
+        MOVE.L  #0,D1           ; Init checksum in D1.
+        TST.W   D0              ; Is the input empty?
+        BEQ     done            ; If so, skip to the end.
+
+        SUB.W   #1,D0           ;   Prepare data size to be a loop counter.
+@1      ADD.B   (A1)+,D1        ;   Add byte to the checksum.
+        DBRA    D0,@1           ;   Next iteration of loop.
+
+done    MOVE.B  D1,(A7)         ; Place calculated checksum on the stack.
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'CALCCSUM'              ; Function name for the debugger.
+
+
+; PROCEDURE PutInt(VAR data: YModemBuffer; offset, value: Integer);
+; EASy68K checked.
+
+.PROC   PutInt
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.W  (A7)+,D0        ; Value to store.
+        SUB.L   A1,A1           ; Clear destination address.
+        MOVE.W  (A7)+,A1        ; Copy offset into destination address.
+        ADDA.L  (A7)+,A1        ; Add buffer beginning to destination address.
+
+        MOVE.L  A1,D2           ; Copy source address to D2.
+        BTST    #0,D2           ; See if address is word-aligned.
+        BNE     @1              ; If not, jump to the code dealing with that.
+
+        MOVE.W  D0,(A1)         ; Move data to word-aligned destination.
+        JMP     (A0)            ; All done, return to caller.
+
+@1      MOVE.B  D0,D1           ; Copy LSB to D1
+        LSR.W   #8,D0           ; Shift LSB off of D0.
+        MOVE.B  D0,(A1)+        ; Copy MSB to destination address. (Note incr.)
+        MOVE.B  D1,(A1)         ; Copy LSB to destination address + 1.
+        JMP     (A0)            ; All done, return to caller.
+
+.ASCII  'PUTINT  '              ; Procedure name for the debugger.
+
+
+; FUNCTION GetInt(data: YModemBuffer; offset: Integer): Integer;
+; EASy68K checked.
+
+.FUNC   GetInt
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        SUB.L   A1,A1           ; Clear source address.
+        MOVE.W  (A7)+,A1        ; Copy offset into source address.
+        ADDA.L  (A7)+,A1        ; Add buffer beginning to source address.
+
+        MOVE.L  A1,D2           ; Copy source address to D2.
+        BTST    #0,D2           ; See if address is word-aligned.
+        BNE     @1              ; If not, jump to the code dealing with that.
+
+        MOVE.W  (A1),D0         ; Move data to D0.
+        BRA     done            ; Skip ahead to returning to the caller.
+
+@1      MOVE.B  (A1)+,D0        ; Move MSB to LSB of D0.
+        LSL.W   #8,D0           ; Shift MSB in D0 into place.
+        MOVE.B  (A1),D0         ; Move LSB into D0.
+
+done    MOVE.W  D0,(A7)         ; Move recovered integer onto the stack.
+        JMP     (A0)            ; All done, return to caller.
+
+.ASCII  'GETINT  '              ; Function name for the debugger.
+
+
+; PROCEDURE PutLong(VAR data: YModemBuffer; offset: Integer; value: Longint);
+; EASy68K checked.
+
+.PROC   PutLong
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.L  (A7)+,D0        ; Value to store.
+        SUB.L   A1,A1           ; Clear destination address.
+        MOVE.W  (A7)+,A1        ; Copy offset into destination address.
+        ADDA.L  (A7)+,A1        ; Add buffer beginning to destination address.
+
+        MOVE.L  A1,D2           ; Copy source address to D2.
+        BTST    #0,D2           ; See if address is word-aligned.
+        BNE     @1              ; If not, jump to the code dealing with that.
+
+        MOVE.L  D0,(A1)         ; Move data to word-aligned destination.
+        JMP     (A0)            ; All done, return to caller.
+
+@1      MOVE.B  D0,D1           ; Copy LSB to D1.
+        LSR.L   #8,D0           ; Shift LSB off of D0.
+        SWAP    D0              ; Swap MSB with the two middle bytes.
+        MOVE.B  D0,(A1)+        ; Copy MSB to destination address. (Note incr.)
+        SWAP    D0              ; Unswap MSB and the two middle bytes.
+        MOVE.W  D0,(A1)+        ; Copy middle bytes to dest+1. (Note incr.)
+        MOVE.B  D1,(A1)         ; Copy LSB to dest+3 (Note incrs.)
+        JMP     (A0)            ; All done, return to caller.
+
+.ASCII  'PUTLONG '              ; Procedure name for the debugger.
+
+
+; FUNCTION GetLong(data: YModemBuffer; offset: Integer): Longint;
+; EASy68K checked.
+
+.FUNC   GetLong
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        SUB.L   A1,A1           ; Clear source address.
+        MOVE.W  (A7)+,A1        ; Copy offset into source address.
+        ADDA.L  (A7)+,A1        ; Add buffer beginning to source address.
+
+        MOVE.L  A1,D2           ; Copy source address to D2.
+        BTST    #0,D2           ; See if address is word-aligned.
+        BNE     @1              ; If not, jump to the code dealing with that.
+
+        MOVE.L  (A1),D0         ; Move data to D0.
+        BRA     done            ; Skip ahead to returning to the caller.
+
+@1      MOVE.B  (A1)+,D0        ; Move MSB to LSB of D0.
+        LSL.W   #8,D0           ; Shift MSB in D0 into byte 3 of D0.
+        MOVE.B  (A1)+,D0        ; Move byte 2 into LSB of D0.
+        SWAP    D0              ; Move MSW(ord) into place.
+        MOVE.B  (A1)+,D0        ; Move byte 3 into LSB of D0.
+        LSL.W   #8,D0           ; Shift byte 3 into byte 3 of D0.
+        MOVE.B  (A1),D0         ; Move LSB to LSB of D0.
+
+done    MOVE.L  D0,(A7)         ; Move recovered longint onto the stack.
+        JMP     (A0)            ; All done, return to caller.
+
+.ASCII  'GETLONG '              ; Function name for the debugger.
+
+
+; FUNCTION SetYmHdr(VAR data: YModemBuffer; sequence: Byte; big: Boolean): Byte;
+; EASy68K checked.
+
+.FUNC   SetYmHdr
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.W  (A7)+,D0        ; Whether it's a 1k buffer (vs. 128k).
+        MOVE.B  (A7)+,D1        ; Sequencing byte.
+        MOVE.L  (A7)+,A1        ; Address of buffer.
+
+        AND.W   #$FF00,D0       ; Test Pascal boolean value.
+        BEQ     @1              ; If false, jump to @1
+        MOVE.B  #kStx,(A1)+     ; Mark buffer as being 1024 bytes long.
+        BRA     setseq          ; Skip "then clause".
+@1      MOVE.B  #kSoh,(A1)+     ; Mark buffer as being 128 bytes long.
+
+setseq  MOVE.B  D1,(A1)+        ; Copy seq. byte to buffer byte 2 (note incr.)
+        EORI.B  #$FF,D1         ; Compute ones complement of seq. byte.
+        MOVE.B  D1,(A1)         ; Copy that to buffer byte 3 (note incr.)
+        EORI.B  #$FF,D1         ; Return seq. byte to normal.
+        ADDQ.B  #1,D1           ; Increment seq. byte.
+
+        MOVE.B  D1,(A7)         ; Place incremented seq. byte on the stack.
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'SETYMHDR'              ; Function name for the debugger.
+
+
+; FUNCTION NotByte(value: Byte): Byte;
+; EASy68K checked.
+
+.FUNC   NotByte
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.B  (A7)+,D0        ; Input byte.
+        EORI.B  #$FF,D0         ; Invert bits.
+        MOVE.W  D0,(A7)         ; Place result on the stack.
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'NOTBYTE '              ; Function name for the debugger.
+
+
+; FUNCTION WriteOct(address, value: Longint; zero_padding: Boolean): Longint;
+; EASy68K checked.
+
+.FUNC   WriteOct
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.W  (A7)+,D1        ; Whether we should zero-pad.
+        MOVE.L  (A7)+,D0        ; Value to code in octal.
+        MOVE.L  (A7)+,A1        ; Where to write it.
+
+        ROL.L   #2,D0           ; Rotate top two bits to least significant pos.
+        MOVE.B  D0,D1           ; Copy LSB to scratchpad. (MSB still 0pad bool.)
+        ANDI.B  #3,D1           ; Mask lowest two bits (32 % 3 = 2).
+
+        ; If we don't want leading 0s, our first loop tries to find where
+        ; the octal digits start. We scan through 10 of the 11 possible octal
+        ; digits; we don't go full 11 because we want to emit 0 if this number
+        ; really is 0x0. Next octal digit to examine is already in D1.
+        MOVE.W  #9,D2           ;   Loop counter.
+        CMP.W   #$FF,D1         ; Wait, did we want 0 padding after all?
+        BHI     write           ; If so, write digits. Else back to the loop.
+@1      TST.B   D1              ;   Is the current octal digit 0?
+        BNE     write           ;   No! Start writing digits.
+        ROL.L   #3,D0           ;   Yes! Rotate next digit to least sig. pos.
+        MOVE.B  D0,D1           ;   Copy LSB to scratchpad.
+        ANDI.B  #7,D1           ;   Mask lowest THREE bits.
+        DBRA    D2,@1           ;   Return to top of loop.
+
+        ; Now it's time to start writing digits. We want to write ALL of the
+        ; remaining digits, so we have to increment the counter.
+write   ADD.W   #1,D2           ;   Loop counter.
+@2      ADDI.B  #48,D1          ;   Add ASCII '0' to scratchpad.
+        MOVE.B  D1,(A1)+        ;   Copy scratchpad to output.
+        ROL.L   #3,D0           ;   Rotate next octal digit to least sig. pos.
+        MOVE.B  D0,D1           ;   Copy LSB to scratchpad.
+        ANDI.B  #7,D1           ;   Mask lowest THREE bits.
+        DBRA    D2,@2           ;   Return to top of loop.
+
+        MOVE.L  A1,(A7)         ; Place next location on stack.
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'WRITEOCT'              ; Function name for the debugger.
+
+
+; FUNCTION WriteDec(address, value: Longint): Longint;
+; EASy68K checked.
+
+.FUNC   WriteDec
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.L  (A7)+,D0        ; Value to code in decimal.
+        MOVE.L  (A7)+,A1        ; Where to write it.
+        MOVE.L  A2,-(A7)        ; Save scratch register A2.
+        MOVE.L  D3,-(A7)        ; Save scratch register D3.
+
+        ; There are probably faster ways; this one is simple. First, use
+        ; comparisons to 10, 100, 1000, etc. to determine the number of
+        ; significant digits in the input. Oh for a 32-bit ALU...
+
+        MOVE.L  #0,D1           ;   Significant digits counter.
+        LEA     pow10,A2        ;   Point A2 at powers of 10 table.
+@1      MOVE.L  (A2),D2         ;   Load current power of 10 into D2.
+        CMP.L   D0,D2           ;   Is it bigger than the number?
+        BHI     write           ;   If so, we know the length. Start writing.
+        ADDI.B  #1,D1           ;   If not, we need more significant digits.
+        ADD.L   #4,A2           ;   And to move to the next power of 10.
+        CMP.B   #10,D1          ;   Got 10 digits? That's plenty for a ulongint.
+        BNE     @1              ;   If not, see if we've got enough digits now.
+
+write   TST.B   D1              ; Have we got any significant digits at all?
+        BEQ     zero            ; If not, jump into loop to emit '0'. D2,D1? OK!
+        SUB.W   #1,D1           ;   Decrement digit count; it's a loop counter.
+outer   MOVE.L  -(A2),D2        ;     Load current power of 10 into D2.
+zero    MOVE.B  #48,D3          ;     Add ASCII '0' to scratchpad.
+inner   CMP.L   D0,D2           ;     Is current power bigger than the number?
+        BHI     break           ;     If so, we've found our digit.
+        SUB.L   D2,D0           ;     If not, subtract power from the number.
+        ADDI.B  #1,D3           ;     And increment the scratchpad.
+        BRA     inner           ;     Return to top of loop.
+break   MOVE.B  D3,(A1)+        ;   Copy scratchpad to output.
+        DBRA    D1,outer        ;   Return to top of loop.
+
+        MOVE.L  (A7)+,D3        ; Recover scratch register D3.
+        MOVE.L  (A7)+,A2        ; Recover scratch register A2.
+        MOVE.L  A1,(A7)         ; Place next location on stack.
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'WRITEDEC'              ; Function name for the debugger.
+
+pow10   .LONG   1               ; Lookup table of powers of 10, starting from
+        .LONG   10              ; 10^0 to 10^9
+        .LONG   100
+        .LONG   1000
+        .LONG   10000
+        .LONG   100000
+        .LONG   1000000
+        .LONG   10000000
+        .LONG   100000000
+        .LONG   1000000000
+
+
+; FUNCTION WriteSpc(address: Longint): Longint;
+; EASy68K checked.
+
+.FUNC   WriteSpc
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.L  (A7)+,A1        ; Where to write the space.
+
+        MOVE.B  #32,(A1)+       ; Write the space.
+
+        MOVE.L  A1,(A7)         ; Place next location on stack.
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'WriteSpc'              ; Function name for the debugger.
+
+
+; PROCEDURE TarCsum(address: Longint);
+; EASy68K checked.
+
+.PROC   TarCsum
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.L  (A7)+,A1        ; Start of tar header.
+
+        MOVE.L  #0,D0           ; Clear checksum receptacle.
+        MOVE.L  #0,D1           ; Will hold indiv. bytes to add to checksum.
+
+        ; First, compute the checksum.
+        MOVE.W  #511,D2         ;   Loop over 512 bytes.
+@1      MOVE.B  (A1)+,D1        ;   Copy header byte to D1.
+        ADD.L   D1,D0           ;   Add byte to checksum.
+        DBRA    D2,@1           ;   Return to top of loop.
+
+        ; Now to copy the checksum in octal to its place in the header. We do
+        ; this writing the digits from least to greatest.
+        SUBA    #357,A1         ; Pull A1 back to end of the checksum digits.
+        MOVE.B  #0,-(A1)        ; Place NUL at checksum byte 7.
+        MOVE.L  #5,D2           ;   Loop 6 times. (Six-digit checksum.)
+@2      MOVE.B  D0,D1           ;   Move LSB of checksum to scratchpad.
+        ANDI.B  #7,D1           ;   Mask lowest three bits.
+        ADDI.B  #48,D1          ;   Add ASCII '0' to scratchpad.
+        MOVE.B  D1,-(A1)        ;   Copy scratchpad out; move A1 backwards.
+        LSR.L   #3,D0           ;   Shift next octal digit to least sig. pos.
+        DBRA    D2,@2           ;   Return to top of loop.
+
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'TarCsum '              ; Procedure name for the debugger.
+
+
+; FUNCTION ToEpoch(time: Longint): Longint;
+; EASy68K checked.
+
+.FUNC   ToEpoch
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.L  (A7)+,D0        ; Seconds since 00:00 on 1/1/1901.
+        SUBI.L  #kTDelta,D0     ; Shift to seconds since 00:00 on 1/1/1970.
+        MOVE.L  D0,(A7)         ; Place result on stack.
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'ToEpoch '              ; Function name for the debugger.
+
+
+.END

@@ -1,0 +1,44 @@
+{ "LisaBBS": a utilty for downloading Lisa files using YModem }
+PROGRAM LisaBBS;
+
+USES
+    {$U PasLibCall.Obj}  PasLibCall,
+    {$U LibPort.Obj}     XferPort,
+    {$U LibShell.Obj}    XferShell,
+    {$U LibUi.Obj}       XferUi;
+
+VAR
+    p:         Port;
+    p_fields:  PcFieldSet;
+    p_conf:    PortConfig;
+    fd:        Integer;
+    errno:     Integer;
+BEGIN
+    { Initialize and open serial port }
+    p := kPortA;                 { Serial port A }
+    PcAllFields(p_fields);
+    PcSensibleDefaults(p_fields, p_conf);
+    p_conf.speed    := kPs9600;  { 9600 BPS }
+    p_conf.block_in := false;    { Non-blocking reads }
+
+    SetPortConfig(p, p_fields, p_conf, errno);
+    IF errno <> 0 THEN BEGIN
+        WriteLn('Error ', errno, ' while configuring serial port');
+        Halt;
+    END;
+
+    fd := OpenPort(p, errno);
+    IF errno <> 0 THEN BEGIN
+        WriteLn('Error ', errno, ' while opening serial port');
+        Halt;
+    END;
+
+    { Initialize the UI library }
+    UiInit(p, fd);
+
+    { Start the shell }
+    XferShell;
+
+    { Cleanup }
+    WriteLn('That''s All, Folks!');
+END.

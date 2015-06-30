@@ -1,0 +1,646 @@
+{ The text-based user interface, with simultaneous I/O to port and console }
+UNIT XferShell;
+
+INTERFACE
+
+USES
+    {$U SysCall.Obj}        SysCall,
+    {$U PasLibCall.Obj}     PasLibCall,
+    {$U Xfer/LibPort.Obj}   XferPort,
+    {$U Xfer/LibUi.Obj}     XferUi,
+    {$U Xfer/LibXfer.Obj}   XferXfer;
+
+TYPE
+    { Current state of the shell }
+    { Includes only state we cannot obtain by querying the OS, so
+      modifications to the filesystem while the shell is running will cause
+      unexpected behavior }
+    ShellState = RECORD
+        action:  (kSsaStay,   { Show the current page of the directory listing }
+                  kSsaNext);  { Advance to the next page of the listing }
+
+        { Directory listings shown to user in "pages" of <=20 entries each }
+        d_page:  Integer;                 { Current page; first page is 0 }
+        d_final: Boolean;                 { This is the last page for this dir }
+        d_entry: ARRAY[1..20] OF E_Name;  { Files to show in this page }
+        d_size:  Integer;                 { Number of files in the page }
+
+        { User can tag files for batch operations }
+        { Tag N means the Nth file encountered in a directory listing }
+        tagged:  SET OF Integer;
+        n_tags:  Integer;  { Number of tags }
+    END;
+
+{ PROCEDURES AND FUNCTIONS }
+
+    { NOTE: All routines call routines in XferUi, which must be initialized }
+
+    PROCEDURE XferShell;
+
+IMPLEMENTATION
+
+    { Helper: calls UiPutError iff errno <> 0 }
+    PROCEDURE CheckWarn(errno: Integer; message: DisplayLine);
+    BEGIN
+        IF errno <> 0 THEN UiPutError(errno, message);
+    END;
+
+    { Helper: rewind to the beginning of the directory stream }
+    PROCEDURE RewindDirStream(VAR errno: Integer);
+    VAR
+        cwd:  Pathname;
+    BEGIN
+        Get_Working_Dir(errno, cwd);
+        CheckWarn(errno, 'getting current working dir');
+        IF errno <> 0 THEN Exit(RewindDirStream);
+        Reset_Catalog(errno, cwd);
+        CheckWarn(errno, 'rewinding directory stream');
+    END;
+
+    { Shows the current page of directory entries }
+    PROCEDURE OpShowDirPage(VAR state: ShellState);
+    VAR
+        dline:  DisplayLine;
+    BEGIN
+        FOR i := 1 TO state.d_size DO BEGIN
+            dline := ' @)  ';
+            dline[2] := Chr(64 + i);  { '@' + i; i = 1 gives us 'A' }
+            Insert(state.d_entry[i], dline, Length(dline) + 1);
+
+            IF (20 * state.d_page + i) IN state.tagged THEN BEGIN
+                dline[5] := '>';
+                Insert('<', dline, Length(dline) + 1);
+            END;
+
+            UiPutLine(1 + i, dline);
+        END;
+    END;
+
+    { Advances to the next directory page }
+    { Creates no output of its own }
+    PROCEDURE OpPageNext(VAR state: ShellState);
+    LABEL
+        1111;
+    VAR
+        cwd:    Pathname;
+        errno:  Integer;
+        prefix:  E_Name;
+    BEGIN
+        state.d_size := 0;
+        IF state.d_final THEN BEGIN
+            { Loop back to the top of the directory listing }
+            state.d_final := false;
+            state.d_page  := 0;
+            RewindDirStream(errno);
+        END ELSE BEGIN
+            { Mark one page forward advance in the directory listing }
+            state.d_page := state.d_page + 1;
+        END;
+
+        { Load the next page of directory entries }
+        prefix := '';  { The wildcard is always '*' }
+        FOR i := 1 TO 20 DO BEGIN
+            state.d_entry[i] := '';
+            Get_Next_Entry(errno, prefix, state.d_entry[i]);
+            IF errno = 848 THEN BEGIN  { Out of directory entries }
+                state.d_final := true;  { Mark that this is the last page }
+                GOTO 1111;
+            END ELSE BEGIN
+                CheckWarn(errno, 'reading directory stream');
+                state.d_size := state.d_size + 1;
+            END;
+        END; 1111:  { statement needed here? }
+    END;
+
+    { Goes to the page'th page of the directory listing }
+    { This approach attempts to handle concurrent filesystem modification
+      somewhat gracefully }
+    { Creates no output of its own }
+    PROCEDURE OpPageGoto(VAR state: ShellState; page: Integer);
+    VAR
+        saw_final:  Boolean;
+    BEGIN
+        saw_final := state.d_final;
+        WHILE state.d_page <> page DO BEGIN
+            OpPageNext(state);
+            IF state.d_final THEN BEGIN
+                IF saw_final THEN BEGIN
+                    { Strange: we've lapped around the entire directory listing
+                      without returning to the prev_page; someone may have
+                      deleted a whole bunch of files here, so we shrug and
+                      loop around to the first page }
+                    OpPageNext(state);
+                    UiPutError(0, 'current directory modified unexpectedly!');
+                END;
+                saw_final := true;
+            END;
+        END;
+    END;
+
+    { Goes back to the previous directory page (by advancing past wraparound }
+    { Creates no output of its own }
+    PROCEDURE OpPagePrev(VAR state: ShellState);
+    VAR
+        prev_page:  Integer;
+        saw_final:  Boolean;
+    BEGIN
+        UiPutStatus('Looping around to previous directory page...');
+
+        { Nothing to do if the directory has just one page }
+        IF state.d_page = 0 AND state.d_final THEN Exit(OpPagePrev);
+
+        { The page preceding the first page is the last page }
+        IF state.d_page = 0 THEN BEGIN
+            WHILE NOT state.d_final DO OpPageNext(state);
+            Exit(OpPagePrev);
+        END;
+
+        { Non-special case: advance through the wraparound }
+        OpPageGoto(state, prev_page);
+    END;
+
+    { Shows what devices are currently online }
+    PROCEDURE OpOnline(VAR state: ShellState);
+    VAR
+        dline:  DisplayLine;
+
+        { Prepares info string about a device or empty string if error }
+        PROCEDURE DevInfoStr(path: Pathname; VAR dline: DisplayLine);
+        VAR
+            my_path:  Pathname;
+            stat:     Fs_Info;
+            errno:    Integer;
+        BEGIN
+            dline := '';
+            my_path := path;
+            Lookup(errno, my_path, stat);
+            IF errno <> 0 THEN Exit(DevInfoStr);
+
+            dline := '  ';
+            Insert(Concat(path, ', ', stat.name, ', ', stat.dir_path, ', '),
+                   dline, Length(dline) + 1);
+            IF stat.mounted THEN         Insert('mounted, ',
+                                                dline, Length(dline) + 1);
+            IF stat.blockstructured THEN Insert('blockstructured, ',
+                                                dline, Length(dline) + 1);
+            CASE stat.devt OF
+                diskdev:    Insert('diskdev',  dline, Length(dline) + 1);
+                pascalbd:   Insert('pascalbd', dline, Length(dline) + 1);
+                seqdev:     Insert('seqdev',   dline, Length(dline) + 1);
+                bitbkt:     Insert('bitbkt',   dline, Length(dline) + 1);
+                non_io:     Insert('non_io',   dline, Length(dline) + 1);
+            END;
+        END;
+    BEGIN
+        UiPutStatus('Producing devices report');
+
+        { The most OS version compatible way to discover online devices is to
+          just go through the list of possible devices }
+        UiClearScreen;
+        UiPutLine(0, 'Online devices report, page 1 of 2');
+        DevInfoStr('-BITBKT', dline);
+        UiPutLine(2, dline);
+        DevInfoStr('-UPPER', dline);
+        UiPutLine(3, dline);
+        DevInfoStr('-LOWER', dline);
+        UiPutLine(4, dline);
+        DevInfoStr('-UPPERTWIG', dline);
+        UiPutLine(5, dline);
+        DevInfoStr('-LOWERTWIG', dline);
+        UiPutLine(6, dline);
+        DevInfoStr('-PARAPORT', dline);
+        UiPutLine(7, dline);
+        DevInfoStr('-RS232A', dline);
+        UiPutLine(8, dline);
+        DevInfoStr('-RS232B', dline);
+        UiPutLine(9, dline);
+        DevInfoStr('-MAINCONSOLE', dline);
+        UiPutLine(10, dline);
+        DevInfoStr('-ALTCONSOLE', dline);
+        UiPutLine(11, dline);
+        DevInfoStr('-CONSOLE', dline);
+        UiPutLine(12, dline);
+        DevInfoStr('-KEYBOARD', dline);
+        UiPutLine(13, dline);
+        DevInfoStr('-PRINTER', dline);
+        UiPutLine(14, dline);
+
+        UiPutLine(23, 'Press SPACE to continue');
+        WHILE UiGetChar <> ' ' DO BEGIN END;
+
+        UiClearScreen;
+        UiPutLine(0, 'Online devices report, page 2 of 2');
+
+        DevInfoStr('-SLOT1', dline);
+        UiPutLine(2, dline);
+        DevInfoStr('-SLOT1CHAN1', dline);
+        UiPutLine(3, dline);
+        DevInfoStr('-SLOT1CHAN2', dline);
+        UiPutLine(4, dline);
+        DevInfoStr('-SLOT1CHAN3', dline);
+        UiPutLine(5, dline);
+        DevInfoStr('-SLOT2', dline);
+        UiPutLine(6, dline);
+        DevInfoStr('-SLOT2CHAN1', dline);
+        UiPutLine(7, dline);
+        DevInfoStr('-SLOT2CHAN2', dline);
+        UiPutLine(8, dline);
+        DevInfoStr('-SLOT2CHAN3', dline);
+        UiPutLine(9, dline);
+        DevInfoStr('-SLOT3', dline);
+        UiPutLine(10, dline);
+        DevInfoStr('-SLOT3CHAN1', dline);
+        UiPutLine(11, dline);
+        DevInfoStr('-SLOT3CHAN2', dline);
+        UiPutLine(12, dline);
+        DevInfoStr('-SLOT3CHAN3', dline);
+        UiPutLine(13, dline);
+
+        UiPutLine(23, 'Press SPACE to continue');
+        WHILE UiGetChar <> ' ' DO BEGIN END;
+    END;
+
+    { Change the current working directory }
+    PROCEDURE OpChdir(VAR state: ShellState);
+    VAR
+        typed:  String[255];
+        path:   Pathname;
+        dline:  DisplayLine;
+        errno:  Integer;
+    BEGIN
+        UiPutStatus( 'Changing current directory');
+        UiPutLine(0, 'Changing current directory');
+
+        UiPutLine(23, 'New dir: ');
+        UiGetLine(typed, max_pathname);
+        path := typed;
+        SetWorkingDir(errno, path);
+
+        IF errno = 0 THEN BEGIN
+            state.d_final := true;    { Will restart us at top of directory }
+            state.action := kSsaNext; { And we'll show a new page of files }
+            state.tagged := [];       { No entries are tagged }
+            state.n_tags := 0;
+        END ELSE BEGIN
+            IF Length(path) <= 18 THEN BEGIN
+                dline := Concat('Failed to set current directory to "', path,
+                                '"; press SPACE to continue');
+            END ELSE BEGIN
+                dline :=
+                    'Failed to set current directory; press SPACE to continue';
+	    END;
+            UiPutLine(23, dline);
+            WHILE UiGetChar <> ' ' DO BEGIN END;
+        END;
+    END;
+
+    { Tag or untag files }
+    PROCEDURE OpTagToggle(VAR state: ShellState);
+    VAR
+        ch:     Char;
+        index:  Integer;
+        dline:  DisplayLine;
+    BEGIN
+        UiPutStatus( 'Toggling file tags');
+        UiPutLine(0, 'Tag/untag files:');
+
+        IF state.d_size <= 0 THEN BEGIN
+            UiPutLine(23, 'No files to tag/untag; press SPACE to continue');
+            WHILE UiGetChar <> ' ' DO BEGIN END;
+            Exit(OpTagToggle);
+        END;
+
+        dline := 'Type A-@';
+        dline[Length(dline)] := Chr(64 + state.d_size);
+        Insert(' to tag/untag, or SPACE to exit', dline, Length(dline) + 1);
+        UiPutLine(23, dline);
+
+        WHILE true DO BEGIN
+            ch := UiGetChar;
+            IF ch = ' ' THEN Exit(OpTagToggle);
+
+            index := Ord(ch) - 64;
+            IF index > 20 THEN index := index - 32;
+            IF index >= 1 AND index <= state.d_size THEN BEGIN
+                index := index + 20 * state.d_page;
+
+                IF index IN state.tagged THEN BEGIN
+                     state.tagged := state.tagged - [index];
+                     state.n_tags := state.n_tags - 1;
+                END ELSE BEGIN
+                     state.tagged := state.tagged + [index];
+                     state.n_tags := state.n_tags + 1;
+                END;
+
+                OpShowDirPage(state);
+            END;
+        END;
+    END;
+
+    { Helper for OpSendTagged: get name of next tagged file to send }
+    { Steps through the directory stream a file at a time while incrementing
+      index; if index is in state.tagged, sets name to the corresponding
+      file and returns true; returns false if the end of the filestream is
+      reached }
+    { Prior to the first call, index should be set to 0, and the directory
+      stream should be rewound to the beginning }
+    { Returns false iff there are no more files to send }
+    FUNCTION NextTaggedFile(VAR state: ShellState;
+                            VAR index: Integer;  { start with 0 }
+                            VAR name:  e_name): Boolean;
+    VAR
+        prefix:  E_Name;
+        errno:   Integer;
+    BEGIN
+        prefix := '';
+        WHILE true DO BEGIN
+            name := '';
+            Get_Next_Entry(errno, prefix, name);
+            IF errno = 848 THEN BEGIN  { Out of directory entries }
+                NextToSend := false;
+                Exit(NextToSend);
+            END ELSE BEGIN
+                index := index + 1;
+                CheckWarn(errno, 'reading directory stream');
+                IF errno = 0 AND index IN state.tagged THEN BEGIN
+                    NextToSend := true;
+                    Exit(NextToSend);
+                END;
+            END;
+        END;
+    END;
+  
+    { Helper for OpSendAll: get name of next file to send }
+    { Like NextTaggedFile, but behaves as if ALL files were tagged }
+    { Prior to the first call, index should be set to 0, and the directory
+      stream should be rewound to the beginning }
+    { Returns false iff there are no more files to send }
+    FUNCTION NextAnyFile(VAR state: ShellState;
+                         VAR index: Integer;  { start with 0 }
+                         VAR name:  e_name): Boolean;
+    VAR
+        prefix:  E_Name;
+        errno:   Integer;
+    BEGIN
+        prefix := '';
+        WHILE true DO BEGIN
+            name := '';
+            Get_Next_Entry(errno, prefix, name);
+            IF errno = 848 THEN BEGIN  { Out of directory entries }
+                NextToSend := false;
+                Exit(NextToSend);
+            END ELSE BEGIN
+                index := index + 1;
+                CheckWarn(errno, 'reading directory stream');
+                IF errno = 0 THEN BEGIN
+                    NextToSend := true;
+                    Exit(NextToSend);
+                END;
+            END;
+        END;
+    END;
+
+    { LibXfer ProgressCallback implementation for file transfers }
+    PROCEDURE UiProgressCallback(phase:        YmTxPhase;
+                                 bytes_sent:   Longint;
+                                 bytes_total:  Longint;
+                                 errors:       Integer);
+    VAR
+        info:  String[50];
+    BEGIN
+        IF phase = YmTxDone THEN BEGIN
+            UiPutProgress(-1, '');  { Clear progress display }
+            Exit(UiProgressCallback);
+        END;
+
+        info := Concat(bytes_sent, '/', bytes_total, ' ',
+                       YmPhaseName(phase), ' ', errors, ' errors');
+        UiPutProgress(999 * bytes_total / bytes_sent, info);
+    END;
+
+    { Generic implementation of OpSend*; behavior depends on NextFile }
+    { Returns the number of files sent }
+    FUNCTION SendFiles(VAR state: ShellState;
+                       FUNCTION NextFile(VAR state: ShellState;
+                                         VAR index: Integer;
+                                         VAR name:  e_name): Boolean): Integer;
+    LABEL
+        2222;
+    VAR
+        old_page:      Integer;
+        index:         Integer;
+        to_send:       E_Name;
+        next_to_send:  E_Name;
+        last_file:     Boolean;
+        errphase:      YmTxPhase;
+        errno:         Integer;
+    BEGIN
+        SendFiles := 0;  { No files sent so far }
+
+        { Rewind directory stream so that we can scan the current directory
+          with NextToSend }
+        old_page := state.d_page;  { So we can return to this page later }
+        RewindDirStream(errno);
+        index := 0;  { Prepare file index counter for NextToSend }
+
+        { This has thrown the ShellState state to go out of synch with the
+          directory stream, so we change its state so that OpPageGoto(old_page)
+          will work successfully }
+        state.d_final := true;  { OpPageGoto will restart at top of directory }
+        state.d_page := -1;     { Because stale state.d_page = old_page }
+
+        { But if we hit an error back there, we probably shouldn't proceed }
+        IF errno <> 0 THEN BEGIN
+            UiPutLine(23, 'Filesystem errors; press SPACE to continue');
+            WHILE UiGetChar <> ' ' DO BEGIN END;
+            OpPageGoto(old_page);  { Return to old directory listing page }
+            Exit(OpSendTagged);
+        END;
+
+        { This somewhat complicated approach is intended to be more robust to
+          filesystem changes than just checking whether we've sent state.n_tags
+          files }
+        IF NOT NextFile(state, index, next_to_send) THEN BEGIN
+            UiPutLine(23, 'All files to send missing! press SPACE to continue');
+            WHILE UiGetChar <> ' ' DO BEGIN END;
+            OpPageGoto(old_page);  { Return to old directory listing page }
+            Exit(OpSendTagged);
+        END;
+
+        { Here we send the files }
+        UiPutLine(23, 'Start your YModem batch receiver now...');
+        REPEAT
+            to_send := next_to_send;
+            last_file := NOT NextFile(state, index, next_to_send);
+            YmTxFile(to_send, UiGetFd, last_file, UiProgressCallback,
+                     errphase, errno);
+            IF errno <> 0 THEN BEGIN
+                UiPutError(errno, Concat('while sending ', to_send));
+                UiPutProgress(-1, '');  { Clear progress display }
+                GOTO 2222;
+            END;
+            SendFiles := SendFiles + 1;
+        UNTIL last_file; 2222:
+
+        { Return to old directory listing page }
+        OpPageGoto(old_page);
+    END;
+
+    { Send tagged files via YModem Batch }
+    PROCEDURE OpSendTagged(VAR state: ShellState);
+    VAR
+        files_sent:    Integer;
+    BEGIN
+        UiPutStatus( 'Sending tagged files');
+        UiPutLine(0, 'Sending tagged files');
+
+        IF state.n_tags <= 0 THEN BEGIN
+            UiPutLine(23, 'No tagged files to send; press SPACE to continue');
+            WHILE UiGetChar <> ' ' DO BEGIN END;
+            Exit(OpSendTagged);
+        END;
+
+        files_sent := SendFiles(state, NextTaggedFile);
+
+        { If we sent a different amount that we expected, all we can do is
+          complain about it }
+        IF files_sent <> state.n_tags THEN
+            UiPutError(0, Concat('Expected to send ', UintToStr(state.n_tags),
+                                 ' files, but sent ', UintToStr(files_sent),
+                                 ' instead'));
+
+        UiPutLine(23, Concat('Sent ', UintToStr(files_sent), ' of ',
+                             UintToStr(state.n_tags),
+                             ' files; press SPACE to continue'));
+        WHILE UiGetChar <> ' ' DO BEGIN END;
+    END;
+
+    { Send ALL files in the current directory via YModem Batch }
+    PROCEDURE OpSendAll(VAR state: ShellState);
+    VAR
+        old_page:      Integer;
+        index:         Integer;
+        to_send:       E_Name;
+        next_to_send:  E_Name;
+        last_file:     Boolean;
+        errphase:      YmTxPhase;
+        errno:         Integer;
+
+ 
+    BEGIN
+        UiPutStatus( 'Sending all files in current directory');
+        UiPutLine(0, 'Sending all files in current directory');
+
+        files_sent := SendFiles(state, NextAnyFile);
+
+        UiPutLine(23, Concat('Sent ', UintToStr(files_sent),
+                             ' files; press SPACE to continue'));
+        WHILE UiGetChar <> ' ' DO BEGIN END;
+    END;
+
+    { Misc functions }
+    PROCEDURE OpMisc(VAR state: ShellState);
+    BEGIN
+        UiPutStatus( 'Misc. actions menu');
+        UiPutLine(0, 'Miscellaneous actions');
+        UiPutLine(23, 'No misc. actions for now; press SPACE to continue');
+        WHILE UiGetChar <> ' ' DO BEGIN END;
+    END;
+
+    { User help display }
+    PROCEDURE OpHelp(VAR state: ShellState);
+    BEGIN
+        UiPutStatus( 'Help display');
+        UiClearScreen;
+        UiPutLine(0, 'Help information');
+        UiPutLine(2, '  TODO(stepleton): Write help information');
+        UiPutLine(23, 'Press SPACE to continue');
+        WHILE UiGetChar <> ' ' DO BEGIN END;
+    END;
+
+    { Program quit }
+    PROCEDURE OpQuit(VAR state: ShellState);
+    BEGIN
+        UiPutStatus( 'Quitting?');
+        UiClearScreen;
+        UiPutLine(4, '     Really quit? [Y/N]');
+        WHILE true DO BEGIN
+            CASE UiGetChar OF
+                'Y','y':    Halt;
+                'N','n':    Exit(OpQuit);
+            END;
+        END;
+    END;
+
+    { Main shell function }
+    { XferUi MUST be initialized before calling this procedure }
+    PROCEDURE XferShell;
+    VAR
+        state:   ShellState;
+        ch:      Char;
+        cwd:     Pathname;  { Note: scratch space only; do not use as state }
+        dline:   DisplayLine;
+        errno:   Integer;
+    BEGIN
+        state.d_final := true;     { Will restart us at top of directory }
+        state.action := kSsaNext;  { Where we need to show a new page of files }
+        state.tagged := [];        { No entries are tagged }
+        state.n_tags := 0;
+
+        { Wait for a key from the user before we begin }
+        UiPutStatus('Ready! Awaiting any keypress to start UI loop...');
+        ch := UiGetChar;
+
+        { UI loop }
+        WHILE true DO BEGIN
+            UiPutStatus('In UI loop.');
+
+            { Show main menu }
+            UiClearScreen;
+            UiPutLine(0,
+'{V1.0} BBS: Next, Prev, Online, Chdir, Tag, Send tagged, send All, Misc, ?');
+
+            { Advance to the next page of the directory listing, if desired }
+            IF state.action = kSsaNext THEN BEGIN
+                OpPageNext(state);  { To the next page }
+                { If the next page is an empty "last page", then loop around
+                  again to the very first page; note that OpPageNext will have
+                  done its own looping after a non-empty last page }
+                IF state.d_final AND state.d_page > 0 AND state.d_size = 0 THEN
+                    OpPageNext(state);
+                { Remain on this page unless otherwise noted }
+                state.action := kSsaStay;
+            END;
+
+            { Display the page of directory entries }
+            OpShowDirPage(state);
+
+            { Display summary line at bottom }
+            Get_Working_Dir(errno, cwd);
+            CheckWarn(errno, 'getting current working dir');
+            dline := 'Page ';
+            Insert(UintToStr(state.d_page), dline, Length(dline) + 1);
+            Insert(' of ',                  dline, Length(dline) + 1);
+            Insert(cwd,                     dline, Length(dline) + 1);
+            Insert(UintToStr(state.n_tags), dline, Length(dline) + 1);
+            Insert(' tagged',               dline, Length(dline) + 1);
+            UiPutLine(23, dline);
+
+            { User action selection }
+            { Unrecognized char just redraws the page }
+            CASE UiGetChar OF
+                'N','n',' ':    state.action := kSsaNext;  { Next page }
+                'P','p':        OpPagePrev(state);
+                'O','o':        OpOnline(state);
+                'C','c':        OpChdir(state);
+                'T','t':        OpTagToggle(state);
+                'S','s':        OpSendTagged(state);
+                'A','a':        OpSendAll(state);
+                'M','m':        OpMisc(state);
+                'Q','q':        OpQuit(state);
+                '?':            OpHelp(state);
+            END;
+        END;
+    END;
+
+END.

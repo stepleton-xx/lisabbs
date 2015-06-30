@@ -1,0 +1,110 @@
+UNIT XferAsm;
+
+INTERFACE
+
+TYPE
+    Byte = -128..127;
+
+{ PROCEDURES AND FUNCTIONS }
+
+    { 1029 bytes: 3 YModem header bytes, 1024 data bytes, 2 CRC bytes. }
+    YModemBuffer = ARRAY [0..1029] OF Byte;
+
+
+    { Like Unix memset(): set count bytes starting at data + offset to value.
+      Returns the address one byte past the last written byte. }
+    FUNCTION MemSet(VAR data: YModemBuffer;
+                    value: Byte;
+                    offset, count: Integer): Longint;
+
+    { Copy count bytes starting at src to dest + offset.
+      Returns the address one byte past the last written byte. }
+    FUNCTION MemCpy(src: Longint;
+                    VAR dest: YModemBuffer;
+                    offset, count: Integer): Longint;
+
+    { Calculate 16-bit CRC of count bytes starting at data + offset. }
+    FUNCTION CalcCrc(data: YModemBuffer; offset, count: Integer): Integer;
+
+    { Calculate 8-bit checksum of count bytes starting at data + offset. }
+    FUNCTION CalcCsum(data: YModemBuffer; offset, count: Integer): Byte;
+
+    { Copy a 16-bit integer to an arbitrary offset. }
+    PROCEDURE PutInt(VAR data: YModemBuffer; offset, value: Integer);
+
+    { Retrieve a 16-bit integer from an arbitrary offset. }
+    FUNCTION GetInt(data: YModemBuffer; offset: Integer): Integer;
+
+    { Copy a 32-bit integer to an arbitrary offset. }
+    PROCEDURE PutLong(VAR data: YModemBuffer; offset: Integer; value: Longint);
+
+    { Retrieve a 32-bit integer from an arbitrary offset. }
+    FUNCTION GetLong(data: YModemBuffer; offset: Integer): Longint;
+
+    { Set a YModem packet header.
+
+          data: YModem packet in memory.
+      sequence: Sequence number of the current packet.
+           big:  true => 1024-byte packet.
+                false => 128-byte packet.
+
+      Returns the sequence number of the next packet. }
+    FUNCTION YmSetHdr(VAR data: YModemBuffer;
+                      sequence: Byte;
+                      big: Boolean): Byte;
+
+    { Return the bitwise not of the argument byte. }
+    FUNCTION NotByte(value: Byte): Byte;
+
+    { Write unsigned value in octal, without padding, starting at address.
+      Returns the address one byte past the end of the written number. }
+    FUNCTION WriteOct(address, value: Longint; zero_padding: Boolean): Longint;
+
+    { Write unsigned value in decimal, without padding, starting at address.
+      Returns the address one byte past the end of the written number. }
+    FUNCTION WriteDec(address, value: Longint): Longint;
+
+    { Write a space character ' ' at address. Returns address + 1. }
+    FUNCTION WriteSpc(address: Longint): Longint;
+
+    { Compute and place tar file header checksum in tar file header assumed to
+      start at address. The checksum field should start out with spaces in it. }
+    PROCEDURE TarCsum(address: Longint);
+
+    { Convert seconds since 00:00 on 1/1/1909 to seconds since 00:00 on
+      1/1/1970. }
+    FUNCTION ToEpoch(time: Longint): Longint;
+
+IMPLEMENTATION
+
+    FUNCTION MemSet; EXTERNAL;
+
+    FUNCTION MemCpy; EXTERNAL;
+
+    FUNCTION CalcCrc; EXTERNAL;
+
+    FUNCTION CalcCsum; EXTERNAL;
+
+    PROCEDURE PutInt; EXTERNAL;
+
+    FUNCTION GetInt; EXTERNAL;
+
+    PROCEDURE PutLong; EXTERNAL;
+
+    FUNCTION GetLong; EXTERNAL;
+
+    FUNCTION YmSetHdr; EXTERNAL;
+
+    FUNCTION NotByte; EXTERNAL;
+
+    FUNCTION WriteOct; EXTERNAL;
+
+    FUNCTION WriteDec; EXTERNAL;
+
+    FUNCTION WriteSpc; EXTERNAL;
+
+    PROCEDURE TarCsum; EXTERNAL;
+
+    FUNCTION ToEpoch; EXTERNAL;
+
+END.

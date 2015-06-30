@@ -1,0 +1,1005 @@
+{ Routines for serial port configuration and I/O }
+UNIT XferPort;
+
+INTERFACE
+
+USES
+    {$U SysCall.Obj}    SysCall;
+
+CONST
+    kPortAPath = '-RS232A-FOOBAR';
+    kPortBPath = '-RS232B-FOOBAR';
+
+TYPE
+    { Which serial port }
+    Port = (kPortA, kPortB);
+
+    { Serial port byte length }
+    PortBits = (kBits7, kBits8);
+
+    { Serial port parity }
+    PortParity = (kParNo,
+                  kParEven,     { Even parity, no input checking }
+                  kParOdd,      { Odd parity, no input checking }
+                  kParZapEven,  { Even parity, error input bytes set to $80 }
+                  kParZapOdd);  { Odd parity, error input bytes set to $00 }
+
+    { Serial port speed }
+    PortSpeed = (kPs50, kPs75, kPs110, kPs150,
+                 kPs200, kPs300, kPs600, kPs1200,
+                 kPs1800, kPs2000, kPs2400, kPs3600,
+                 kPs4800, kPs7200, kPs9600, kPs19200);
+
+    { Serial port handshake }
+    PortHandshake = (kHsNo, kHsDtr, kHsXonXoff);
+
+
+    { PortConfig field selectors; kPcNil is special, corresponding to no field }
+    PCField = (kPcNil     ,
+               kPcBits    , kPcParity   , kPcSpeed   , kPcHsIn    , kPcHsOut  ,
+               kPcBlockIn , kPcCrlfDelay, kPcTab     , kPcDscOnBrk, kPcToutOut,
+               kPcLfInsert, kPcToutIn   , kPcBrkOnCls, kPcModaTout);
+
+    { A set of PortConfig field selectors }
+    PCFieldSet = SET OF PcField;
+
+    { Record type for serial port configuration }
+    PortConfig = RECORD
+        { Basic serial port configuration parameters }
+        { Note that stop bits is apparently always 1 }
+        bits:       PortBits;                               (* kPcBits      *)
+        parity:     PortParity;                             (* kPcParity    *)
+        speed:      PortSpeed;                              (* kPcSpeed     *)
+        hs_in:      PortHandshake;  { Input handshake }     (* kPcHsIn      *)
+        hs_out:     PortHandshake;  { Output handshake }    (* kPcHsOut     *)
+
+        { Whether Read_Data should block }
+        block_in:   Boolean;                                (* kPcBlockIn   *)
+
+        { Delay after outbound CRLF, milliseconds }
+        crlf_delay: Integer;                                (* kPcCrlfDelay *)
+
+        { Input typeahead buffer params }                   (* kPcTab       *)
+        tab_size:   Integer;  { Buffer size; up to 1024 OK }
+        tab_low:    Integer;  { OK to receive signaled if buffer size <= this }
+        tab_hi:     Integer;  { Pause signaled if buffer size >= this amount }
+
+        { Disconnect detection; receiving BREAK means disconnect }
+        dsc_on_brk: Boolean;                                (* kPcDscOnBrk  *)
+
+        { Output timeout; seconds to complete handshake; 0 for no timeout }
+        tout_out:   Integer;                                (* kPcToutOut   *)
+
+        { Automatic LF insertion }
+        lf_insert:  Boolean;                                (* kPcLfInsert  *)
+
+        { Input timeout; seconds (to do what?); 0 for no timeout }
+        (* N/A for LOS 1.0 or 2.0 *)
+        tout_in:    Integer;                                (* kPcToutIn    *)
+
+        { Send BREAK during Close_Object }
+        (* N/A for LOS 1.0 or 2.0 *)
+        brk_on_cls: Boolean;                                (* kPcBrkOnCls  *)
+
+        { Modem-A timeouts; Modem-A driver only }           (* kPcModaTout  *)
+        (* N/A for LOS 1.0 or 2.0 *)
+        moda_recov: Longint;  { Milliseconds to wait between calls }
+        moda_carr:  Longint;  { Milliseconds w/o carrier before dropping line }
+        moda_conn:  Integer;  { Seconds to wait for modem to connect }
+    END;
+
+    { A set of byte values }
+    ByteSet = SET OF -128..127;
+
+{ PROCEDURES AND FUNCTIONS }
+
+    { Place all PortConfig fields usable by all LOS versions in fields }
+    PROCEDURE PcAllFields(VAR fields: PcFieldSet);
+
+    { PcAllFields for LOS 3.0 and up (but excludes kPcModaTout) }
+    PROCEDURE PcAllLos3Fields(VAR fields: PcFieldSet);
+
+    { Set sensible defaults for listed PortConfig fields; 2400 8N1, DTR }
+    PROCEDURE PcSensibleDefaults(fields: PcFieldSet; VAR conf: PortConfig);
+
+    { Check listed PortConfig fields; return first invalid field or kPcNil }
+    { Applies to LOS 1.0 and 2.0; see implementation for checking details }
+    FUNCTION PcLos12CheckValidity(p: Port; fields: PcFieldSet;
+                                  conf: PortConfig): PcField;
+
+    { Validity checking for LOS 3.0 and up }
+    FUNCTION PcLos3CheckValidity(p: Port; fields: PcFieldSet;
+                                 conf: PortConfig): PcField;
+
+    (* Routines here down assume valid field selectors and PortConfig parameters
+       for your OS, and will abort early if any OS error is encountered *)
+
+    { Set port configuration for fields in fields }
+    { Results may be odd if you don't set (or validate) parity & bits jointly }
+    { -1 errno indicates invalid params; no details, not rigorously checked }
+    PROCEDURE SetPortConfig(p: Port; fields: PcFieldSet;
+                            conf: PortConfig; VAR errno: Integer);
+
+    { Send break for specified milliseconds, optionally lowering DTR }
+    PROCEDURE SendBreak(p: Port; millis: Integer; lower_dtr: Boolean;
+                        VAR errno: Integer);
+
+    { Wait for modem connect; errno is 645 if no connect; Modem-A driver only }
+    (* N/A for LOS 1.0 or 2.0 *)
+    PROCEDURE WaitModemConnect(p: Port; VAR errno: Integer);
+
+    { Open a serial port, returning a file reference number }
+    { Usually called after the port is configured with SetPortConfig }
+    FUNCTION OpenPort(p: Port; VAR errno: Integer): Integer;
+
+    { Poll fd to read up to count bytes over millis milliseconds }
+    { Args - fd: file reference number
+           addr: where to place bytes read
+          count: how many bytes to read
+         actual: how many bytes were actually read
+         millis: how long to poll, in milliseconds
+       poll_int: pause between polls, in milliseconds
+          errno: receives OS errors encountered during polling }
+    { Disclaimers
+      - Assumes port is in nonblocking mode (or what's the point?)
+      - Will abort if any OS error is encountered
+      - millis must be greater than or equal to 0
+      - poll_int must be greater than 0
+      - This routine will poll floor(millis / poll_int) + 1 times, which makes
+            the most sense when poll_int evenly divides millis.
+      - When deciding how many times to poll, assumes ZERO overhead, so
+            frequent polling may yield a much longer polling interval }
+    { -1 errno indicates invalid params; no details, not rigorously checked }
+    PROCEDURE PolledRead(fd: Integer;
+                         addr, count: Longint; VAR actual: Longint;
+                         millis, poll_int: Longint;
+                         VAR errno: Integer);
+
+    { Poll fd until a byte in bytes is read, or time runs out }
+    { Keeps reading bytes until either of the above occurs }
+    { Args - fd: file reference number
+          bytes: bytes we're waiting for
+      byte_read: last byte read
+         actual: number of bytes read (incremented, not cleared)
+         millis: how long to poll, in milliseconds
+       poll_int: pause between polls, in milliseconds
+          errno: receives OS errors encountered during polling }
+    { Returns true iff a byte in bytes is read }
+    { Disclaimers
+      - Assumes port is in nonblocking mode (or what's the point?)
+      - Will abort if any OS error is encountered
+      - millis must be greater than or equal to 0
+      - poll_int must be greater than 0
+      - This routine will poll floor(millis / poll_int) + 1 times, which makes
+            the most sense when poll_int evenly divides millis.
+      - When deciding how many times to poll, assumes ZERO overhead, so
+            frequent polling may yield a much longer polling interval }
+    { -1 errno indicates invalid params; no details, not rigorously checked }
+    FUNCTION PolledAwait(fd: Integer;
+                         bytes: ByteSet; VAR byte_read: -128..127;
+                         VAR actual: Longint;
+                         millis, poll_int: Longint;
+                         VAR errno: Integer): Boolean;
+
+    { Try repeatedly to write count bytes for at least secs seconds }
+    { Args - fd: file reference number
+           addr: where to read bytes to write
+          count: how many bytes to write
+         actual: how many bytes were actually written
+           secs: how long to wait on success; 0 means indefinitely
+       poll_int: pause between polls, in milliseconds
+          errno: receives OS errors encountered during sending }
+    { Disclaimers
+      - Won't disable blocking; unlikely to honor time limit if writes block
+      - May exhibit odd behavior after 24 days of uptime
+      - secs must be greater than or equal to 0
+      - secs > 2,147,483 causes immediate failure
+      - poll_int must be greater than 0
+      - When pausing to poll, assumes ZERO overhead; lots of overhead may yield
+            fewer write attempts than expected }
+    { -1 errno indicates invalid params; no details, not rigorously checked }
+    PROCEDURE PolledWrite(fd: Integer;
+                          addr, count: Longint; VAR actual: Longint;
+                          secs, poll_int: Longint;
+                          VAR errno: Integer);
+
+    { Block secs seconds to read up to count bytes }
+    { Args - p: serial port
+            fd: file reference number
+          addr: where to place bytes read
+         count: how many bytes to read
+        actual: how many bytes were actually read
+          secs: how long to wait to read those bytes; 0 means indefinitely
+         errno: receives OS errors encountered during reading }
+    { Disclaimers
+      - LOS 3.0+ only
+      - Note delay is in seconds, not milliseconds
+      - secs must be greater than or equal to 0
+      - Will set port to blocking mode and alter input timeout (kPcToutIn),
+            will not restore prior settings
+      - Not sure what happens if the transfer speed is just too slow to receive
+            count bytes in secs seconds
+      - Unspecified behavior if fd is not pointing at p }
+    { -1 errno indicates invalid params; no details, not rigorously checked }
+    (* N/A for LOS 1.0 or 2.0 *)
+    PROCEDURE TimedRead(p: Port; fd: Integer;
+                        addr, count: Longint; VAR actual: Longint;
+                        secs: Longint;
+                        VAR errno: Integer);
+
+    { TODO: TimedAwait }
+
+    { Block secs seconds on handshake delays to write up to count bytes }
+    { Args - p: serial port
+            fd: file reference number
+          addr: where to read bytes to send
+         count: how many bytes to send
+        actual: how many bytes were actually sent
+          secs: how long to wait on handshake delays; 0 means indefinitely
+         errno: receives OS errors encountered during sending }
+    { Disclaimers are TODO but blows away kPcToutOut is one of 'em }
+    { -1 errno indicates invalid params; no details, not rigorously checked }
+    PROCEDURE TimedWrite(p: Port; fd: Integer;
+                         addr, count: Longint; VAR actual: Longint;
+                         secs: Longint;
+                         VAR errno: Integer);
+
+    { Identify the serial port that corresponds to the supplied path }
+    { Returns true iff path actually corresponds to a serial port }
+    FUNCTION PathToPort(path: PathName; VAR p: Port): Boolean;
+
+    { Identify the open serial port referenced by a file reference number }
+    { Args - fd: file reference number
+              p: receives serial port referred to by fd
+          errno: receives OS errors encountered while investigating fd }
+    { Returns true iff fd is an open file reference number on a serial port }
+    FUNCTION RefnumToPort(fd:        Integer;
+                          VAR p:     Port;
+                          VAR errno: Integer): Boolean;
+
+
+IMPLEMENTATION
+
+    PROCEDURE PcAllFields{VAR fields: PcFieldSet};
+    BEGIN
+        fields := [kPcBits   , kPcParity   , kPcSpeed, kPcHsIn    , kPcHsOut  ,
+                   kPcBlockIn, kPcCrlfDelay, kPcTab  , kPcDscOnBrk, kPcToutOut,
+                   kPcLfInsert];
+    END;
+
+    PROCEDURE PcAllLos3Fields{VAR fields: PcFieldSet};
+    BEGIN
+        PcAllFields(fields);
+        fields := fields + [kPcLfInsert, kPcToutIn, kPcBrkOnCls];
+    END;
+
+    PROCEDURE PcSensibleDefaults{fields: PcFieldSet; VAR conf: PortConfig};
+    BEGIN
+        IF kPcBits      IN fields THEN conf.bits       := kBits8;
+        IF kPcParity    IN fields THEN conf.parity     := kParNo;
+        IF kPcSpeed     IN fields THEN conf.speed      := kPs2400;
+        IF kPcHsIn      IN fields THEN conf.hs_in      := kHsDtr;
+        IF kPcHsOut     IN fields THEN conf.hs_out     := kHsDtr;
+        IF kPcBlockIn   IN fields THEN conf.block_in   := false;
+        IF kPcCrlfDelay IN fields THEN conf.crlf_delay := 0;
+        IF kPcTab       IN fields THEN BEGIN
+                                       conf.tab_size   := 1024;
+                                       conf.tab_low    := 341;  { 1024 / 3 }
+                                       conf.tab_hi     := 683;  { 1024 * 2 / 3 }
+        END;
+        IF kPcDscOnBrk  IN fields THEN conf.dsc_on_brk := false;
+        IF kPcToutOut   IN fields THEN conf.tout_out   := 0;    { No timeout }
+        IF kPcLfInsert  IN fields THEN conf.lf_insert  := false;
+        IF kPcToutIn    IN fields THEN conf.tout_in    := 0;    { No timeout }
+        IF kPcBrkOnCls  IN fields THEN conf.brk_on_cls := false;
+        IF kPcModaTout  IN fields THEN BEGIN
+                                       conf.moda_recov := 2000; { No wardial! }
+                                       conf.moda_carr  := 500;  { 1/2 a second }
+                                       conf.moda_conn  := 30;   { 30 seconds }
+        END;
+    END;
+
+    FUNCTION PcLos12CheckValidity{(p: Port; fields: PcFieldSet;
+                                   conf: PortConfig): PcField};
+    VAR
+        ok:     Boolean;
+    BEGIN
+        PcLos12CheckValidity := kPcNil;  { Default answer; nothing's wrong }
+
+        { Deeply-nested IF statements work around lack of short-circuit AND }
+
+        { For best results, check kPcBits and kPcParity jointly; on LOS 1.0 and
+          2.0, you can only have eight-bit bytes if you're using no parity, and
+          only have seven-bit bytes with parity---or so the docs suggest }
+        IF kPcBits IN fields THEN BEGIN
+            IF kPcParity IN fields THEN BEGIN
+                CASE conf.bits OF
+                    kBits8: ok := conf.parity =  kParNo;
+                    kBits7: ok := conf.parity <> kParNo;
+                END;
+                IF NOT ok THEN BEGIN
+                    PcLos12CheckValidity := kPcParity;
+                    Exit(PcLos12CheckValidity);
+                END;
+            END;
+        END;
+
+        { Speed check depends on the port selected, since different speeds are
+          available for different ports }
+        IF kPcSpeed IN fields THEN BEGIN
+            CASE p OF
+                kPortA: ok := conf.speed IN [kPs50, kPs75, kPs110, kPs150,
+                                             kPs200, kPs300, kPs600, kPs1200,
+                                             kPs2400, kPs4800, kPs9600];
+                kPortB: ok := conf.speed IN [kPs50, kPs75, kPs110, kPs150,
+                                             kPs200, kPs300, kPs600, kPs1200,
+                                             kPs2400,
+                                             { The following speeds are OUTPUT
+                                               ONLY for LOS 1.0 and 2.0, and
+                                               maybe also 3.0. Documentation
+                                               isn't clear; see Transfer vs.
+                                               PortConfig docs }
+                                             kPs3600, kPs4800, kPs7200, kPs9600,
+                                             kPs19200];
+            END;
+            IF NOT ok THEN BEGIN
+                PcLos12CheckValidity := kPcSpeed;
+                Exit(PcLos12CheckValidity);
+            END;
+        END;
+
+        { Any kind of input handshake is valid }
+
+        { For best results, check kPcHsOut and kPcCrlfDelay jointly, since CR/LF
+          delay is apparently a kind of handshake. Can't have it together with
+          any other type }
+        IF kPcHsOut IN fields THEN BEGIN
+            IF kPcCrlfDelay IN fields THEN BEGIN
+                IF conf.hs_out <> kHsNo THEN BEGIN
+                    IF conf.crlf_delay <> 0 THEN BEGIN
+                        PcLos12CheckValidity := kPcHsOut;
+                        Exit(PcLos12CheckValidity);
+                    END;
+                END;
+            END;
+        END;
+
+        { Blocking Read_Data, or not, is fine }
+
+        { For best results, check kPcHsOut and kPcCrlfDelay jointly, but
+          negative CR/LF delay is intrinsically bad }
+        IF kPcCrlfDelay IN fields THEN BEGIN
+            IF conf.crlf_delay < 0 THEN BEGIN
+                PcLos12CheckValidity := kPcCrlfDelay;
+                Exit(PcLos12CheckValidity);
+            END;
+        END;
+
+        { Typeahead buffer sizes check }
+        IF kPcTab IN fields THEN BEGIN
+                       ok := conf.tab_size >= 0;
+            IF ok THEN ok := conf.tab_size <= 1024;
+            IF ok THEN ok := conf.tab_low  >= 0;
+            IF ok THEN ok := conf.tab_low  <  conf.tab_hi;
+            IF ok THEN ok := conf.tab_hi   <= conf.tab_size;
+            IF NOT ok THEN BEGIN
+                PcLos12CheckValidity := kPcTab;
+                Exit(PcLos12CheckValidity);
+            END;
+        END;
+
+        { Disconnecting on BREAK, or not, is fine }
+
+        { Output timeout check }
+        if kPcToutOut IN fields THEN BEGIN
+            IF conf.tout_out < 0 THEN BEGIN
+                PcLos12CheckValidity := kPcToutOut;
+                Exit(PcLos12CheckValidity);
+            END;
+        END;
+    END;
+
+    FUNCTION PcLos3CheckValidity{(p: Port; fields: PcFieldSet;
+                                  conf: PortConfig): PcField};
+    VAR
+        l12fields:  PcFieldSet;
+        ok:         Boolean;
+    BEGIN
+        { We start with the PcLos12CheckValidity result, for fields that
+          have the same validity in 3.0 as they did in earlier LOS versions }
+        PcLos3CheckValidity := PcLos12CheckValidity(
+            p, fields - [kPcBits, kPcParity], conf);
+
+        { For best results, check kPcBits and kPcParity jointly. On LOS 3.0,
+          you can only have no or odd parity with eight-bit bytes, and no byte
+          zapping on error, then, either---or so the docs suggest }
+        IF kPcBits IN fields THEN BEGIN
+            IF kPcParity IN fields THEN BEGIN
+                IF conf.bits = kBits8 THEN BEGIN
+                    IF conf.parity IN [kParEven,
+                                       kParZapEven,
+                                       kParZapOdd] THEN BEGIN
+                        PcLos3CheckValidity := kPcParity;
+                        Exit(PcLos3CheckValidity);
+                    END;
+                END;
+            END;
+        END;
+
+        { Inserting LF into output, or not, is fine }
+
+        { Input timeout check }
+        if kPcToutIn IN fields THEN BEGIN
+            IF conf.tout_in < 0 THEN BEGIN
+                PcLos3CheckValidity := kPcToutIn;
+                Exit(PcLos3CheckValidity);
+            END;
+        END;
+
+        { Break during Close_Object, or not, is fine }
+
+        { Modem-A timeouts check }
+        IF kPcModaTout IN fields THEN BEGIN
+                       ok := conf.moda_recov >= 0;
+            IF ok THEN ok := conf.moda_carr  >= 0;
+            IF ok THEN ok := conf.moda_conn  >= 0;
+            IF NOT ok THEN BEGIN
+                PcLos3CheckValidity := kPcModaTout;
+                Exit(PcLos3CheckValidity);
+            END;
+        END;
+    END;
+
+    PROCEDURE SetPortConfig{p: Port; fields: PcFieldSet;
+                            conf: PortConfig; VAR errno: Integer};
+    VAR
+        cparm:      DcType;
+        port_path:  PathName;
+    BEGIN
+        errno := 0;             { Assume success by default }
+        cparm.dcversion := 2;   { This field is always 2 }
+
+        { Port selection to actual port path }
+        IF p = kPortA THEN port_path := kPortAPath ELSE port_path := kPortBPath;
+
+        { Set parity; it's best to set this jointly with bits, but if you don't
+          do that, we take a wild guess, assume you mean eight bits, and hope
+          for the best }
+        IF kPcParity IN fields THEN BEGIN
+            cparm.dccode := dvParity;
+            IF (kPcBits IN fields) AND (conf.bits = kBits7) THEN BEGIN
+                CASE conf.parity OF
+                    kParNo:         cparm.dcdata[0] := 6;  { LOS 3.0+ only }
+                    kParOdd:        cparm.dcdata[0] := 1;
+                    kParZapOdd:     cparm.dcdata[0] := 2;
+                    kParEven:       cparm.dcdata[0] := 3;
+                    kParZapEven:    cparm.dcdata[0] := 4;
+                END;
+            END ELSE BEGIN  { either you said 8 bits or we guess you want that }
+                CASE conf.parity OF
+                    kParNo:         cparm.dcdata[0] := 0;
+                    kParOdd:        cparm.dcdata[0] := 5;  { LOS 3.0+ only }
+                    OTHERWISE       errno := -1  { Private error }
+                END;
+            END;
+
+            IF errno = 0 THEN Device_Control(errno, port_path, cparm);
+            IF errno <> 0 THEN Exit(SetPortConfig);
+        END;
+
+        { We're just going to ignore bits now---we set them jointly with parity
+          or not at all }
+
+        { Set port speed }
+        IF kPcSpeed IN fields THEN BEGIN
+            cparm.dccode := dvBaud;
+            CASE conf.speed OF
+                kPs50:          cparm.dcdata[0] :=    50;
+                kPs75:          cparm.dcdata[0] :=    75;
+                kPs110:         cparm.dcdata[0] :=   110;
+                kPs150:         cparm.dcdata[0] :=   150;
+                kPs200:         cparm.dcdata[0] :=   200;
+                kPs300:         cparm.dcdata[0] :=   300;
+                kPs600:         cparm.dcdata[0] :=   600;
+                kPs1200:        cparm.dcdata[0] :=  1200;
+                kPs1800:        cparm.dcdata[0] :=  1800;
+                kPs2000:        cparm.dcdata[0] :=  2000;
+                kPs2400:        cparm.dcdata[0] :=  2400;
+                kPs3600:        cparm.dcdata[0] :=  3600;
+                kPs4800:        cparm.dcdata[0] :=  4800;
+                kPs7200:        cparm.dcdata[0] :=  7200;
+                kPs9600:        cparm.dcdata[0] :=  9600;
+                kPs19200:       cparm.dcdata[0] := 19200;
+            END;
+            Device_Control(errno, port_path, cparm);
+            IF errno <> 0 THEN Exit(SetPortConfig);
+        END;
+
+        { Set input handshake }
+        IF kPcHsIn IN fields THEN BEGIN
+            { Clear handshake first---a two-step process }
+            cparm.dccode := dvInDTR;
+            Device_Control(errno, port_path, cparm);
+            IF errno <> 0 THEN Exit(SetPortConfig);  { end step 1 }
+            cparm.dccode := dvTypeahd;
+            cparm.dcdata[0] := -1;
+            cparm.dcdata[1] := -1;
+            cparm.dcdata[2] := 32767;
+            Device_Control(errno, port_path, cparm);
+            IF errno <> 0 THEN Exit(SetPortConfig);  { end step 2 }
+
+            { Set desired handshake if not none }
+            IF conf.hs_in <> kHsNo THEN BEGIN
+                CASE conf.hs_in OF
+                    kHsDtr:         cparm.dccode := dvInDTR;
+                    kHsXonXoff:     cparm.dccode := dvInXON;
+                END;
+                Device_Control(errno, port_path, cparm);
+                IF errno <> 0 THEN Exit(SetPortConfig);
+            END;
+        END;
+
+        { Set output handshake; note it could be cleared by kPcCrlfDelay }
+        IF kPcHsOut IN fields THEN BEGIN
+            CASE conf.hs_out OF
+                kHsNo:              cparm.dccode := dvOutNoHS;
+                kHsDtr:             cparm.dccode := dvOutDTR;
+                kHsXonXoff:         cparm.dccode := dvOutXON;
+            END;
+            Device_Control(errno, port_path, cparm);
+            IF errno <> 0 THEN Exit(SetPortConfig);
+        END;
+
+        { Set whether Read_Data should block }
+        IF kPcBlockIn IN fields THEN BEGIN
+            cparm.dccode := dvInWait;
+            IF conf.block_in THEN BEGIN
+                cparm.dcdata[0] := 0;
+            END ELSE BEGIN
+                cparm.dcdata[0] := 1;
+            END;
+            Device_Control(errno, port_path, cparm);
+            IF errno <> 0 THEN Exit(SetPortConfig);
+        END;
+
+        { Set output CRLF delay; note this clears output handshake params }
+        IF kPcCrlfDelay IN fields THEN BEGIN
+            { Primarily to support the case where the user turns on all fields
+              and then sets the sensible defaults, no CRLF delay will be set if
+              the specified delay is 0 and the kPcHsOut field is set }
+            IF NOT (kPcHsOut IN fields) OR (conf.crlf_delay <> 0) THEN BEGIN
+                cparm.dccode := dvOutDelay;
+                cparm.dcdata[0] := conf.crlf_delay;
+                Device_Control(errno, port_path, cparm);
+                IF errno <> 0 THEN Exit(SetPortConfig);
+            END;
+        END;
+
+        { Set input typeahead buffer params }
+        IF kPcTab IN fields THEN BEGIN
+            cparm.dccode := dvTypeahd;
+            cparm.dcdata[0] := conf.tab_size;
+            cparm.dcdata[1] := conf.tab_low;
+            cparm.dcdata[2] := conf.tab_hi;
+            Device_Control(errno, port_path, cparm);
+            IF errno <> 0 THEN Exit(SetPortConfig);
+        END;
+
+        { Set disconnect on BREAK }
+        IF kPcDscOnBrk IN fields THEN BEGIN
+            cparm.dccode := dvDiscon;
+            cparm.dcdata[0] := 0;
+            IF conf.dsc_on_brk THEN BEGIN
+                cparm.dcdata[1] := 10;
+            END ELSE BEGIN
+                cparm.dcdata[1] := 0;
+            END;
+            Device_Control(errno, port_path, cparm);
+            IF errno <> 0 THEN Exit(SetPortConfig);
+        END;
+
+        { Set output timeout }
+        IF kPcToutOut IN fields THEN BEGIN
+            cparm.dccode := 12;  { No symbolic name }
+            cparm.dcdata[0] := conf.tout_out;
+            Device_Control(errno, port_path, cparm);
+            IF errno <> 0 THEN Exit(SetPortConfig);
+        END;
+
+        { Set automatic LF insertion }
+        IF kPcLfInsert IN fields THEN BEGIN
+            cparm.dccode := dvAutoLF;
+            IF conf.lf_insert THEN BEGIN
+                cparm.dcdata[0] := 1;
+            END ELSE BEGIN
+                cparm.dcdata[0] := 0;
+            END;
+            Device_Control(errno, port_path, cparm);
+            IF errno <> 0 THEN Exit(SetPortConfig);
+        END;
+
+        { Set input timeout }
+        IF kPcToutIn IN fields THEN BEGIN
+            cparm.dccode := 14;  { No symbolic name }
+            cparm.dcdata[0] := conf.tout_out;
+            Device_Control(errno, port_path, cparm);
+            IF errno <> 0 THEN Exit(SetPortConfig);
+        END;
+
+        { Set BREAK during Close_Object }
+        IF kPcBrkOnCls IN fields THEN BEGIN
+            cparm.dccode := 25;  { No symbolic name }
+            IF conf.brk_on_cls THEN BEGIN
+                cparm.dcdata[0] := 1;
+            END ELSE BEGIN
+                cparm.dcdata[0] := 0;
+            END;
+            Device_Control(errno, port_path, cparm);
+            IF errno <> 0 THEN Exit(SetPortConfig);
+        END;
+
+        { Set Modem-A timeouts }
+        IF kPcModaTout IN fields THEN BEGIN
+            cparm.dccode := 22;  { No symbolic name }
+            cparm.dcdata[0] := conf.moda_recov;
+            cparm.dcdata[1] := conf.moda_carr;
+            cparm.dcdata[2] := conf.moda_conn;
+            Device_Control(errno, port_path, cparm);
+            IF errno <> 0 THEN Exit(SetPortConfig);
+        END;
+    END;
+
+    PROCEDURE SendBreak{p: Port; millis: Integer; lower_dtr: Boolean;
+                        VAR errno: Integer};
+    VAR
+        cparm:      DcType;
+        port_path:  PathName;
+    BEGIN
+        errno := 0;             { Assume success by default }
+        cparm.dcversion := 2;   { This field is always 2 }
+
+        { Port selection to actual port path }
+        IF p = kPortA THEN port_path := kPortAPath ELSE port_path := kPortBPath;
+
+        { Prepare and execute BREAK command }
+        cparm.dccode := 13;  { No symbolic name }
+        cparm.dcdata[0] := millis;
+        IF lower_dtr THEN BEGIN
+            cparm.dcdata[1] := 1;
+        END ELSE BEGIN
+            cparm.dcdata[1] := 0;
+        END;
+        Device_Control(errno, port_path, cparm);
+    END;
+
+    PROCEDURE WaitModemConnect{p: Port; VAR errno: Integer};
+    VAR
+        cparm:      DcType;
+        port_path:  PathName;
+    BEGIN
+        errno := 0;             { Assume success by default }
+        cparm.dcversion := 2;   { This field is always 2 }
+
+        { Port selection to actual port path }
+        IF p = kPortA THEN port_path := kPortAPath ELSE port_path := kPortBPath;
+
+        { Prepare and execute wait-on-connect command }
+        cparm.dccode := 24;
+        Device_Control(errno, port_path, cparm);
+    END;
+
+    FUNCTION OpenPort{(p: Port; VAR errno: Integer): Integer};
+    VAR
+        port_path:  PathName;
+        fd:         Integer;
+    BEGIN
+        { Port selection to actual port path, then attempt opening }
+        IF p = kPortA THEN port_path := kPortAPath ELSE port_path := kPortBPath;
+        Open(errno, port_path, fd, [Dread, Dwrite]);
+        OpenPort := fd;
+    END;
+
+    PROCEDURE PolledRead{fd: Integer;
+                         addr, count: Longint; VAR actual: Longint;
+                         millis, poll_int: Longint;
+                         VAR errno: Integer};
+    LABEL
+        1111;
+    VAR
+        ok:         Boolean;
+        polls:      Longint;
+        my_addr:    Longint;
+        my_actual:  Longint;
+        total:      Longint;
+        tspec:      Timestmp_Interval;
+        tm:         Time_Rec;
+    BEGIN
+        errno := 0;  { Assume success by default }
+
+        { Basic argument checking }
+                   ok :=    count >= 0;
+        IF ok THEN ok :=   millis >= 0;
+        IF ok THEN ok := poll_int >  0;
+        IF NOT ok THEN BEGIN
+            errno := -1;  { Private error }
+            Exit(PolledRead);
+        END;
+
+        { Figure out how many times we'll need to poll---for times when poll_int
+          evenly divides millis, once at the beginning of the millis interval
+          and once at the end }
+        polls := millis div poll_int + 1;
+
+        total := 0;       { Bytes read by polling so far }
+        my_addr := addr;  { Address to read in the very next poll }
+
+        tspec.sec  := poll_int div 1000;  { Prepare pause interval }
+        tspec.msec := poll_int mod 1000;
+
+        { Polling loop }
+        WHILE true DO BEGIN
+            { Read from the input }
+            Read_Data(errno, fd, my_addr, count - total, my_actual,
+                      Sequential, 0);
+            IF errno <> 0 THEN Exit(PolledRead);
+
+            { Break if we've read enough }
+            total := total + my_actual;
+            IF total >= count THEN GOTO 1111;
+
+            { Break if we've polled enough }
+            polls := polls - 1;
+            IF polls <= 0 THEN GOTO 1111;
+
+            { Where to read on the next poll }
+            my_addr := my_addr + my_actual;
+
+            { Wait until the next time to poll }
+            Delay_Time(errno, tspec, tm);
+            IF errno <> 0 THEN Exit(PolledRead);
+        END; 1111:
+
+        { Total read }
+        actual := total;
+    END;
+
+    FUNCTION PolledAwait{(fd: Integer;
+                          bytes: ByteSet; VAR byte_read: -128..127;
+                          VAR actual: Longint;
+                          millis, poll_int: Longint;
+                          VAR errno: Integer): Boolean};
+    VAR
+        ok:      Boolean;
+        polls:   Longint;
+        actual:  Longint;
+        tspec:   Timestmp_Interval;
+        tm:      Time_Rec;
+    BEGIN
+        PolledAwait := false;  { Assume a target byte is not seen by default }
+        errno := 0;            { Assume successful operation by default }
+
+        { Basic argument checking }
+                   ok :=   millis >= 0;
+        IF ok THEN ok := poll_int >  0;
+        IF NOT ok THEN BEGIN
+            errno := -1;  { Private error }
+            Exit(PolledAwait);
+        END;
+
+        { Figure out how many times we'll need to poll---for times when poll_int
+          evenly divides millis, once at the beginning of the millis interval
+          and once at the end }
+        polls := millis div poll_int + 1;
+
+        tspec.sec  := poll_int div 1000;  { Prepare pause interval }
+        tspec.msec := poll_int mod 1000;
+
+        { Polling loop }
+        WHILE true DO BEGIN
+            { Read a byte from the input }
+            Read_Data(errno, fd, Ord4(@byte_read), 1, total, Sequential, 0);
+            IF errno <> 0 THEN Exit(PolledAwait);
+
+            IF total >= 0 THEN BEGIN
+                actual := actual + 1;
+                { Break if we've read a byte we're looking for }
+                IF byte_read IN bytes THEN BEGIN
+                    PolledAwait := true;
+                    Exit(PolledAwait);
+                END;
+            END;
+
+            { Break if we've polled enough }
+            polls := polls - 1;
+            IF polls <= 0 THEN Exit(PolledAwait);
+
+            { Wait until the next time to poll }
+            Delay_Time(errno, tspec, tm);
+            IF errno <> 0 THEN Exit(PolledAwait);
+        END;
+    END;
+
+    PROCEDURE PolledWrite{fd: Integer;
+                          addr, count: Longint; VAR actual: Longint;
+                          secs: Longint;
+                          VAR errno: Integer};
+    LABEL
+        2222;
+    VAR
+        ok:               Boolean;
+        my_addr:          Longint;
+        my_actual:        Longint;
+        total:            Longint;
+        t_start:          Longint;
+        t_end:            Longint;
+        t_now:            Longint;
+        bounds_reversed:  Boolean;
+
+        { Retrieve value of system timer, in milliseconds }
+        { WARNING: System timer will roll over after 49.7 days of uptime }
+        FUNCTION GetTimer(VAR errno: Integer): Longint;
+        VAR
+            cparm:  DcType;
+        BEGIN
+            errno := 0;             { Assume success by default }
+            cparm.dcversion := 2;   { This field is always 2 }
+            cparm.dccode := dvGetEvent;
+            Device_Control(errno, '-MAINCONSOLE', cparm);
+            GetTimer := cparm.dcdata[3];
+        END;
+
+    BEGIN
+        errno := 0;  { Assume success by default }
+
+        { Basic argument checking }
+                   ok := count >= 0;
+        IF ok THEN ok :=  secs >= 0;
+        IF ok THEN ok :=  secs  < 2147483;  { 2^31 / 1000 }
+        IF NOT ok THEN BEGIN
+            errno := -1;
+            Exit(PolledWrite);
+        END;
+
+        total := 0;       { Bytes written by polling so far }
+        my_addr := addr;  { Address to write in the very next poll }
+
+        { Determine timer bounds for successful write }
+        t_start := GetTimer(errno);
+        IF errno <> 0 THEN Exit(PolledWrite);
+        t_end := t_start + 1000 * secs;
+        bounds_reversed := t_start > t_end;  { Due to integer overflow }
+
+        { Polling loop }
+        WHILE true DO BEGIN
+            { Write to the output }
+            Write_Data(errno, fd, my_addr, count - total, my_actual,
+                       Sequential, 0);
+            IF errno <> 0 THEN Exit(PolledWrite);
+
+            { Break if we've written enough }
+            total := total + my_actual;
+            IF total >= count THEN GOTO 2222;
+
+            { Break if we've polled for enough time }
+            t_now := GetTimer(errno);
+            IF errno <> 0 THEN Exit(PolledWrite);
+            IF bounds_reversed THEN BEGIN
+                { The interval in which it's OK to write wraps around INT_MAX }
+                IF t_now < t_start THEN IF t_now > t_end THEN GOTO 2222;
+            END ELSE BEGIN
+                IF t_now > t_end   THEN GOTO 2222;
+                IF t_now < t_start THEN GOTO 2222; 
+            END;
+
+            { Whence to read for the next write }
+            my_addr := my_addr + my_actual;
+        END; 2222:
+
+        { Total written }
+        actual := total;
+    END;
+
+    PROCEDURE TimedRead{p: Port; fd: Integer;
+                        addr, count: Longint; VAR actual: Longint;
+                        secs: Longint;
+                        VAR errno: Integer};
+    VAR
+        ok:         Boolean;
+        cparm:      DcType;
+        port_path:  PathName;
+    BEGIN
+        { Basic argument checking }
+                   ok := count >= 0;
+        IF ok THEN ok :=  secs >= 0;
+        IF NOT ok THEN BEGIN
+            errno := -1;  { Private error }
+            Exit(TimedRead);
+        END;
+
+        errno := 0;             { Assume success by default }
+        cparm.dcversion := 2;   { This field is always 2 }
+
+        { Port selection to actual port path }
+        IF p = kPortA THEN port_path := kPortAPath ELSE port_path := kPortBPath;
+
+        { Enable input blocking }
+        cparm.dccode := dvInWait;
+        cparm.dcdata[0] := 0;
+        Device_Control(errno, port_path, cparm);
+        IF errno <> 0 THEN Exit(TimedRead);
+
+        { Block for up to specified number of seconds }
+        cparm.dccode := 14;  { No symbolic namde }
+        cparm.dcdata[0] := secs;
+        Device_Control(errno, port_path, cparm);
+        IF errno <> 0 THEN Exit(TimedRead);
+
+        { Do the read }
+        Read_Data(errno, fd, addr, count, actual, Sequential, 0);
+    END;
+
+    PROCEDURE TimedWrite{p: Port; fd: Integer;
+                         addr, count: Longint; VAR actual: Longint;
+                         secs: Longint;
+                         VAR errno: Integer};
+    VAR
+        ok:         Boolean;
+        cparm:      DcType;
+        port_path:  PathName;
+    BEGIN
+        { Basic argument checking }
+                   ok := count >= 0;
+        IF ok THEN ok :=  secs >= 0;
+        IF NOT ok THEN BEGIN
+            errno := -1;  { Private error }
+            Exit(TimedWrite);
+        END;
+
+        errno := 0;             { Assume success by default }
+        cparm.dcversion := 2;   { This field is always 2 }
+
+        { Port selection to actual port path }
+        IF p = kPortA THEN port_path := kPortAPath ELSE port_path := kPortBPath;
+
+        { Wait on handshake during output for up to seconds indicated }
+        cparm.dccode := 12;  { No symbolic namde }
+        cparm.dcdata[0] := secs;
+        Device_Control(errno, port_path, cparm);
+        IF errno <> 0 THEN Exit(TimedWrite);
+
+        { Do the write }
+        Write_Data(errno, fd, addr, count, actual, Sequential, 0);
+    END;
+
+    FUNCTION PathToPort{(path: PathName; VAR p: Port): Boolean};
+    BEGIN
+        PathToPort := false;  { Assume not a serial port by default }
+
+        IF path[0] <> '-' THEN Exit(PathToPort);
+        IF path[1] <> 'R' AND path[1] <> 'r' THEN Exit(PathToPort);
+        IF path[2] <> 'S' AND path[2] <> 's' THEN Exit(PathToPort);
+        IF path[3] <> '2' THEN Exit(PathToPort);
+        IF path[4] <> '3' THEN Exit(PathToPort);
+        IF path[5] <> '2' THEN Exit(PathToPort);
+
+             IF path[6] = 'A' OR path[6] = 'a' THEN p := kPortA;
+        ELSE IF path[6] = 'B' OR path[6] = 'b' THEN p := kPortB;
+        ELSE Exit(PathToPort);
+
+          IF length(path) = 7 THEN PathToPort := true
+        ELSE PathToPort := path[7] = '-';
+    END;
+
+    FUNCTION RefnumToPort{(fd:        Integer;
+                           VAR p:     Port;
+                           VAR errno: Integer): Boolean};
+    VAR
+        stat: Fs_Info;
+    BEGIN
+        RefnumToPort := false;  { Assume not a serial port by default }
+        Info(errno, fd, stat);
+        IF errno <> 0 THEN Exit(RefnumToPort);
+        RefnumToPort := PathToPort(stat.dir_path, p);
+    END;
+
+END.

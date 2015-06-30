@@ -1,0 +1,325 @@
+{ Helper routines for text-based UI, with simultaneous I/O to port and console }
+{ "Owns" the screen and serial port }
+{ Assumes remote user has a VT-100 compatible display }
+{ 80 cols, 24 rows used for UI; further rows on Lisa used for status info }
+{ 24: blank }
+{ 25: blank }
+{ 26: blank }
+{ 26: File transfer progress info }
+{ 27: blank }
+{ 28: Serial TX/RX errors }
+{ 29: blank }
+{ 30: BBS status line }
+{ 31: blank }
+UNIT XferUi;
+
+INTERFACE
+
+USES
+    {$U SysCall.Obj}        SysCall,
+    {$U PasLibCall.Obj}     PasLibCall,
+    {$U Xfer/LibAsm.Obj}    XferAsm,
+    {$U Xfer/LibPort.Obj}   XferPort;
+
+CONST
+    kRowXferProgress = 26;
+    kRowIoErrors     = 28;
+    kRowStatus       = 30;
+
+TYPE
+    { A string type for text to show on port and console displays }
+    DisplayLine = String[80];
+
+VAR
+    { Serial port handles }
+    ui_p:        Port;
+    ui_fd:       Integer;
+
+    { Input file for echo-less keyboard input }
+    kinput:      Text;
+
+    { Output file for error messages to alternate console }
+    stderr:      Text;
+
+    { A buffer for assembling text and escape codes for a line of port output }
+    port_buf:    String[120];
+
+{ PROCEDURES AND FUNCTIONS }
+
+    { Initialize the UI system with information about an open serial port }
+    PROCEDURE UiInit(p: Port; fd: Integer);
+
+    { Retrieve the Port for the open serial port }
+    FUNCTION UiGetPort: Port;
+
+    { Retrieve the refnum for the open serial port }
+    FUNCTION UiGetFd: Integer;
+
+    { Clear the screen }
+    PROCEDURE UiClearScreen;
+
+    { Display a line of text on the specified row }
+    PROCEDURE UiPutLine(row: 0..23; line_text: DisplayLine);
+
+    { Poll for one character of user input without echo; 0 if no char waiting }
+    FUNCTION UiPollChar: Char;
+
+    { Loop on UiPollChar until any non-0x0 char is read }
+    FUNCTION UiGetChar: Char;
+
+    { Display a single character at current cursor position }
+    PROCEDURE UiPutChar(ch: Char);
+
+    { Retrieve a line of text from the user }
+    PROCEDURE UiGetLine(VAR typed: String[255]; count: 0..255);
+
+    { Display text on the status line (Lisa display only) }
+    PROCEDURE UiPutStatus(line_text: DisplayLine);
+
+    { Display error information on the error line (Lisa display only) }
+    { No error number shown if errno is 0; no message shown if message is '' }
+    PROCEDURE UiPutError(errno: Integer; message: DisplayLine);
+
+    { Display progress information on the progress line (Lisa display only) }
+    { Progress ranges in [0, 999], negative progress clears progress line }
+    { 50 characters are available beyond the end of the progress bar for
+      text in info }
+    PROCEDURE UiPutProgress(progress: Integer; info: String[50]);
+
+    { Helpers for constructing DisplayLine values (where else to put them?) }
+    { Return a string representation of an unsigned 32-bit integer }
+    FUNCTION UintToStr(value: Integer): String[10];
+
+IMPLEMENTATION
+
+    { Initialize the UI system with information about an open serial port }
+    PROCEDURE UiInit{p: Port; fd: Integer};
+    BEGIN
+        ui_p := port;
+        ui_fd := fd;
+        Reset(kinput, '-KEYBOARD');
+        Reset(stderr, '-ALTCONSOLE');
+    END;
+
+    { Helper: write the current contents of port_buf to the serial port }
+    PROCEDURE SendPortBuf;
+    VAR
+        actual:  Integer;
+        errno:   Integer;
+    BEGIN
+        TimedWrite(ui_p, ui_fd, Ord4(@port_buf) + 1, Length(port_buf),
+                   actual, 10, errno);  { Ten second timeout }
+             IF errno <> 0 THEN UiPutError(errno, '')
+        ELSE IF actual <> Length(port_buf) THEN BEGIN
+            { Note abuse of UiPutError with subsequent Write call }
+            UiPutError('wrote ');
+            Write(output, actual, ' bytes instead of ', Length(port_buf), '.');
+        END;
+    END;
+
+    FUNCTION UintToStr{(value: Integer): String[10]};
+    VAR
+        uint_str:   String[10];
+        startaddr:  Longint;
+        endaddr:    Longint;
+        len:        Integer;
+    BEGIN
+        uint_str   := '@@@@@@@@@@';  { Allocate room for ten digits }
+        startaddr  := Ord4(@uint_str) + 1;
+        endaddr    := WriteDec(startaddr, value);
+        len        := endaddr - startaddr;
+        IF len < 10 THEN Delete(uint_str, len + 1, 10 - len);  { Truncate }
+        UintToStr := uint_str;
+    END;
+
+    { Helper: add a <ESC>[ escape code to the end of the port_buf buffer }
+    PROCEDURE AppendEscapeCode(code: String[20]);
+    VAR
+        old_len:  Integer;
+    BEGIN
+        old_len := Length(port_buf);
+        Insert('e[', port_buf, Length(port_buf) + 1);
+        Insert(code, port_buf, Length(port_buf) + 1);
+        port_buf[old_len + 1] := Chr(27);  { Replace 'e' with ESC }
+    END;
+
+    { Helper: return a VT100 cursor movement code }
+    FUNCTION Vt100GoToXY(col: 0..79, row: 0..23): String[10];
+    BEGIN
+        Vt100GoToXY := Concat(UintToStr(Ord(row) + 1), ';',
+                              UintToStr(Ord(col) + 1), 'H');
+    END;
+
+    FUNCTION UiGetPort: Port;
+    BEGIN
+        UiGetPort := ui_port;
+    END;
+
+    FUNCTION UiGetFd: Integer;
+    BEGIN
+        UiGetFd := ui_fd;
+    END;
+
+    PROCEDURE UiClearScreen;
+    BEGIN
+        { First, the console display }
+        ScreenCtr(CgoHome);
+        ScreenCtr(CclearScreen);
+
+        { Next, the serial port }
+        port_buf := '';
+        AppendEscapeCode('H');
+        AppendEscapeCode('2J');
+        SendPortBuf;
+    END;
+
+    PROCEDURE UiPutLine{row: 0..23, line_text: DisplayLine};
+    BEGIN
+        { First, the console display }
+        GoToXY(0, row);
+        ScreenCtr(CclearELine);
+        Write(output, line_text);
+
+        { Next, the serial port }
+        port_buf := '';
+        AppendEscapeCode(Vt100GoToXY(0, row));  { Move to selected row }
+        AppendEscapeCode('2K');                 { Clear line }
+        Insert(line_text, port_buf, Length(port_buf) + 1);
+        SendPortBuf;
+    END;
+
+    FUNCTION UiPollChar: Char;
+    VAR
+        ch:      Char;
+        b:       Byte;
+        actual:  Integer;
+        errno:   Integer;
+    BEGIN
+        ch := Chr(0);  { Assume no character by default }
+
+        { First, the console keyboard }
+        IF Keypress THEN BEGIN
+            Read(kinput, ch);
+            UiPollChar := ch;
+            Exit(UiPollChar);
+        END;
+
+        { Next, the serial port }
+        PolledRead(ui_fd, Ord4(@b), 1, actual, 1, 31337, errno);  { Just once }
+        IF errno <> 0 THEN BEGIN
+            UiPutError(errno, '');
+            Exit(UiPollChar);
+        END;
+        IF actual > 0 THEN BEGIN
+            IF b >= 0 THEN ch := Chr(b) ELSE ch := Chr(256 + b);
+            UiPollChar := ch;
+            Exit(UiPollChar);
+        END;
+    END;
+
+    FUNCTION UiGetChar: Char;
+    VAR
+        ch:     Char;
+        tspec:  Timestmp_Interval;
+        tm:     Time_Rec;
+        errno:  Integer;
+    BEGIN
+        tspec.sec  := 0;
+        tspec.msec := 100;
+        REPEAT
+            ch := UiPollChar;
+            Delay_Time(errno, tspec, tm);  { Errors will be silent }
+        UNTIL ch <> Chr(0);
+        UiGetChar := ch;
+    END;
+
+    PROCEDURE UiPutChar{ch: Char};
+    BEGIN
+        { First, the console display }
+        Write(output, ch);
+
+        { Next, the serial port }
+        port_buf    := '@';
+        port_buf[1] := ch;
+        SendPortBuf;
+    END;
+
+    PROCEDURE UiGetLine{VAR typed: String[255]; count: 0..255};
+    VAR
+        one_ch:  String[1];
+    BEGIN
+        typed  := '';
+        one_ch := '@';
+
+        WHILE count > 0 DO BEGIN
+            one_ch[1] := UiGetChar;
+
+            { Break on LF or CR }
+            IF one_ch[1] IN [Chr(10), Chr(13)] THEN Exit(UiPrompt);
+
+            { Drop last char on BS or DEL, otherwise keep char }
+            IF one_ch[1] IN [Chr(8), Chr(127)] THEN BEGIN
+                IF Length(typed) > 0 THEN BEGIN
+                    Delete(typed, Length(typed), 1);
+                    port_buf := Chr(8) + ' ' + Chr(8);
+                    SendPortBuf;
+                    count := count + 1;
+                END;
+            END ELSE BEGIN
+                Insert(one_ch, typed, Length(typed) + 1);
+                UiPutChar(one_ch[1]);  { echo back to user }
+                count := count - 1;
+            END;
+        END;
+    END;
+
+    PROCEDURE UiPutStatus{line_text: DisplayLine};
+    BEGIN
+        GoToXY(0, kRowStatus);
+        ScreenCtr(CclearELine);
+        Write(output, line_text);
+    END;
+
+    PROCEDURE UiPutError{errno: Integer; message: DisplayLine};
+    BEGIN
+        GoToXY(0, kRowIoErrors);
+        ScreenCtr(CclearELine);
+
+        IF errno = 0 AND message = '' THEN Exit(UiPutError);  { Clear display }
+
+        { Error output to the screen }
+        IF errno = 0 THEN Write(output, 'Error')
+                     ELSE Write(output, 'Error ', errno);
+        IF message <> '' THEN Write(output, ': ', message);
+
+        { Error output to the alternate console }
+        IF errno = 0 THEN WriteLn(stderr, 'Error: ', message)
+                     ELSE WriteLn(stderr, 'Error ', errno, ': ', message);
+    END;
+
+    PROCEDURE UiPutProgress{progress: Integer; info: String[50]};
+    LABEL
+        1111;
+    VAR
+        dline:  DisplayLine;
+        count:  Integer;
+    BEGIN
+        IF progress < 0 THEN BEGIN  { Clear progress line }
+            UiPutLine(kRowXferProgress, '');
+            Exit(UiPutProgress);
+        END;
+
+        { Draw progress bar; note 27 'ticks' inside, and 27*37 = 999 }
+        dline := '[                           ] ';
+        count := 0;
+        FOR i := 2 to 28 DO BEGIN
+            count := count + 37;
+            IF count <= progress THEN dline[i] := '#'
+                                 ELSE GOTO 1111;
+        END; 1111:
+
+        Insert(info, dline, Length(dline) + 1);
+        UiPutLine(kRowXferProgress, dline);
+    END;
+
+END.

@@ -1,0 +1,449 @@
+{ Routines for assembling YModem packets for outbound file transfer,
+  including YModem control packets and packets containing TAR archive headers
+  and file metadata }
+UNIT XferData;
+
+INTERFACE
+
+USES
+    {$U Xfer/LibAsm.Obj}   XferAsm,
+    {$U SysCall.Obj}       SysCall;
+
+CONST
+    kSoh = 1;   { YModem packet has 128 bytes of data. }
+    kStx = 2;   { YModem packet has 1024 bytes of data. }
+    kEot = 4;   { YModem end of file symbol. }
+    kAck = 6;   { Packet successfully received. }
+    kEof = 32;  { CP/M EOF marker. }
+    kCee = 67;  { Capital C (initiate transfer). }
+
+{ PROCEDURES AND FUNCTIONS }
+
+    { Set header and CRC for a YModem packet containing arbitrary data.
+
+          data: YModem packet in memory.
+      sequence: Sequence number of the current packet.
+           big:  true => 1024-byte packet.
+                false => 128-byte packet.
+
+      Returns the sequence number of the next packet. }
+    FUNCTION YmFinishPacket(VAR data: YModemBuffer;
+                            sequence: Byte; big: Boolean): Byte;
+
+    { Initialize a YModem batch transfer file header packet.
+
+      Note: A file header packet always has serial number 0.
+
+       data: YModem packet.
+       name: Name of the file being transferred.
+       size: Size of the file.
+      mtime: Modification time, in seconds since the Lisa epoch.
+
+      Returns the sequence number of the next YModem packet (always 1). }
+    FUNCTION YmFileHdrPacket(VAR data: YModemBuffer;
+                             name: E_Name; size, mtime: Longint): Integer;
+
+    { Initialize an empty YModem batch transfer file header packet.
+
+      An empty (all bytes $0) packet indicates end of batch file transmission.
+      Note: A file header packet always has serial number 0.
+
+       data: YModem packet.
+
+      Returns the sequence number of the next YModem packet (always 1). }
+    FUNCTION YmEmptyFileHdrPacket(VAR data: YModemBuffer): Integer;
+
+    { Creates a YModem packet holding all Label metadata for a file.
+
+          data: YModem packet in memory.
+          info: Fs_Info record for a particular file.
+      sequence: Sequence number of the current packet.
+
+      Builds a single YModem packet containing a tar file-record for a file that
+      holds the entire contents of the Label metadata associated with the file
+      identified by the supplied Fs_Info record. If an error is encountered,
+      the archived file in the packet will contain an error string with the
+      error's code (instead of the Label metadata).
+
+      The name of the archived file is the file name specified in the Fs_Info
+      record, followed by '.label'.
+
+      Calls YmFinishPacket on its own. Returns the sequence number of the next
+      YModem packet. }
+    FUNCTION LabelPacket(VAR data: YModemBuffer;
+                         info: Fs_Info;
+                         sequence: Byte): Byte;
+
+    { Creates a YModem packet holding filesystem metadata for a file.
+
+          data: YModem packet in memory.
+          info: Fs_Info record for a particular file.
+      sequence: Sequence number of the current packet.
+
+      Builds a single YModem packet containing a tar file-record for a Unix text
+      file containing information derived from the supplied Fs_Info record.
+
+      The name of the archived file is the file name specified in the Fs_Info
+      record, followed by '.info'.
+
+      Calls YmFinishPacket on its own. Returns the sequence number of the next
+      YModem packet. }
+    FUNCTION InfoPacket(VAR data: YModemBuffer;
+                        info: Fs_Info;
+                        sequence: Byte): Byte;
+
+    { Starts a YModem packet for holding the data in the beginning of a file.
+
+          data: YModem packet in memory.
+          info: Fs_Info record for a particular file.
+
+      Partially constructs a single YModem packet containing the beginning of a
+      tar file-record for the data contained in the file identified by the
+      supplied Fs_Info record. The first 512 bytes are occuped by the tar record
+      header, which leaves the last 512 bytes (and subsequent packets) for the
+      actual data within the file.
+
+      Once you've started the packet with this function, then filled the
+      remaining 512 bytes with file data, it will be necessary to set the
+      packet's checksum and sequence number using YmFinishPacket. Be sure to
+      indicate that this is a "big" packet. }
+    PROCEDURE DataHdrPacket(VAR data: YModemBuffer; info: Fs_Info);
+
+IMPLEMENTATION
+
+    (* YModem routines *)
+    (*******************)
+
+    { Get starting address for payload data in a YModem packet. Result is
+      suitable for supplying as the Data_Addr argument to Read_Data.
+
+          data: YModem packet in memory.
+
+      Returns the starting address for payload data in a YModem packet. }
+    FUNCTION YmDataAddr(data: YModemBuffer): Longint;
+    BEGIN
+        YmDataAddr := Ord4(@data) + 3;
+    END;
+
+    { Public routine, documented above }
+    FUNCTION YmFinishPacket{(VAR data: YModemBuffer;
+                             sequence: Byte; big: Boolean): Byte};
+    VAR
+        crc:    Integer;
+    BEGIN
+        IF big THEN BEGIN
+            crc := CalcCrc(data, 3, 1024);
+            PutLong(data, 1027, crc);
+        END ELSE BEGIN
+            crc := CalcCrc(data, 3, 128);
+            PutLong(data, 131, crc);
+        END;
+        YmFinishPacket := YmSetHdr(data, sequence, big);
+    END;
+
+    { Check validity of a YModem packet, including sequence number and CRC.
+
+          data: YModem packet in memory.
+      sequence: Expected sequence number of the packet.
+
+      Returns true iff the YModem packet is valid. }
+    FUNCTION YmCheckPacket(data: YModemBuffer; sequence: Byte): Boolean;
+    VAR
+        crc:    Integer;
+        size:   Integer;
+    BEGIN
+        YmCheckPacket := false;  { Pessimistic by default. }
+
+        { Obtain packet size. }
+        CASE data[0] OF
+            kSoh:   size := 128;
+            kStx:   size := 1024;
+        OTHERWISE   Exit(YmCheckPacket);  { Returns false. }
+        END;
+
+        { Check packet sequence numbers. }
+        IF data[1] <> sequence THEN Exit(YmCheckPacket);  { Returns false. }
+        IF data[2] <> NotByte(sequence) THEN Exit(YmCheckPacket);  { False. }
+
+        { If packet CRC is good, then we're OK. }
+        YmCheckPacket := (CalcCrc(data, 3, size) = GetInt(data, size + 3));
+    END;
+
+    { Public routine, documented above }
+    FUNCTION YmFileHdrPacket{(VAR data: YModemBuffer;
+                              name: E_Name; size, mtime: Longint): Integer};
+    VAR
+        addr:  Longint;
+    BEGIN
+        addr := MemSet(data, 0, 3, 128);  { Zero all bytes in the packet. }
+
+        { Copy filename; skip length byte, leave room for null terminator. }
+        addr := MemCpy(Ord4(@name) + 1, data, 3, length(name)) + 1;
+        { Place size and modification time after filename. }
+        addr := WriteDec(addr, size);
+        addr := WriteSpc(addr);
+        addr := WriteOct(addr, ToEpoch(mtime), false);
+
+        { This packet's sequence number is always 0. }
+        YmFileHdrPacket := YmFinishPacket(data, 0, false);
+    END;
+
+    { Public routine, documented above }
+    FUNCTION YmEmptyFileHdrPacket{(VAR data: YModemBuffer): Integer};
+    VAR
+	addr:  Longint;
+    BEGIN
+        addr := MemSet(data, 0, 3, 128);  { Zero all bytes in the packet. }
+        { This packet's sequence number is always 0. }
+        YmEmptyFileHdrPacket := YmFinishPacket(data, 0, false);
+    END;
+
+    (* tar routines *)
+    (****************)
+
+    { Create a tar file-record header at the top of a YModem packet.
+
+          data: YModem packet in memory.
+          name: (Base)name of the file archived in the tar file-record.
+        suffix: Optional extension of the archived file. (You must supply '.').
+          info: Fs_Info record for a particular file.
+          size: Size of the archived file, in bytes.
+         mtime: Modification time of the archived file (UNIX epoch).
+
+      The header always appears at the top of the packet and always occupies
+      512 bytes. }
+    PROCEDURE TarFileHdr(VAR data: YModemBuffer;
+                         name, suffix: E_Name; size, mtime: Longint);
+    CONST
+        kMode = '000644 ';   { -rw-r--r-- }
+        kUid = '000000 ';    { UID 0 }
+        kGid = '003677 ';    { GID 1983 (octal) }
+        kUstar = 'ustar';    { tar file signature part 1 }
+        kUname = 'root';     { root user }
+        kGroup = 'lisa';     { lisa group }
+        kSpaces = '      ';  { six spaces }
+    VAR
+        base:   Integer;
+        addr:   Longint;
+        kstr:   String[7];
+        csum:   Longint;
+    BEGIN
+        { Set base position of the tar header, then zero out first 512 bytes. }
+        base := 3;
+        addr := MemSet(data, 0, base, 512);
+
+        { Copy in the file name and suffix. }
+        addr := MemCpy(  Ord4(@name) + 1, data,                base, length(name));
+        addr := MemCpy(Ord4(@suffix) + 1, data, base + length(name), length(suffix));
+
+        { Copy phony UNIX mode, uid, and gid. }
+        kstr := kMode;
+        addr := MemCpy(  Ord4(@kstr) + 1, data,          base + 100, 7);
+        kstr := kUid;
+        addr := MemCpy(  Ord4(@kstr) + 1, data,          base + 108, 7);
+        kstr := kGid;
+        addr := MemCpy(  Ord4(@kstr) + 1, data,          base + 116, 7);
+
+        { Write file size and mtime. }
+        addr := WriteOct(Ord4(@data) + base + 124,  size, true);
+        addr := WriteOct(Ord4(@data) + base + 136, mtime, true);
+
+        { Write blank (spaces) checksum, plus NUL, plus space. }
+        kstr := kSpaces;
+        addr := WriteSpc(1 + MemCpy(Ord4(@kstr) + 1, data, base + 148, 6));
+
+        data[base + 156] := 48;  { ASCII '0': this is a normal file. }
+
+        { Copy first part of magic number, then set rest by hand. }
+        kstr := kUstar;
+        addr := MemCpy(  Ord4(@kstr) + 1, data,          base + 257, 5);
+        { base + 262 is NUL. }
+        data[base + 263] := 48;
+        data[base + 264] := 48;
+
+        { Copy user and group. }
+        kstr := kUname;
+        addr := MemCpy(  Ord4(@kstr) + 1, data,          base + 265, 4);
+        kstr := kGroup;
+        addr := MemCpy(  Ord4(@kstr) + 1, data,          base + 297, 4);
+
+        { Set header checksum. }
+        TarCsum(Ord4(@data) + base);
+    END;
+
+    (* tar+YModem routines *)
+    (***********************)
+
+    { All public routines, documented above. }
+
+    FUNCTION LabelPacket{(VAR data: YModemBuffer;
+                          info: Fs_Info;
+                          sequence: Byte): Byte};
+    CONST
+        kOops = 'Error encountered while reading label: ';
+    VAR
+        addr:   Longint;
+        name:   Pathname;
+        errno:  Integer;
+        size:   Longint;
+        kstr:   String[45];
+    BEGIN
+        addr := MemSet(data, 0, 3 + 512, 512);  { Clear second half of packet. }
+
+        { Try to read label into second half of the packet. The label can be
+          no longer than 128 bytes. }
+        name := Concat(info.dir_path, '-', info.name);
+        Read_Label(errno, name, YmDataAddr(data) + 512, 128, size);
+        IF errno <> 0 THEN BEGIN
+            kstr := kOops;
+            addr := WriteDec(
+                MemCpy(Ord4(@kstr) + 1, data, 3 + 512, length(kstr)), errno);
+        END;
+
+        { Prepare tar file header in the first half of the packet. }
+        TarFileHdr(data, info.name, '.label', size, ToEpoch(info.dtm));
+
+        { Add YModem packet header and CRC. }
+        LabelPacket := YmFinishPacket(data, sequence, true);
+    END;
+
+    FUNCTION InfoPacket{(VAR data: YModemBuffer;
+                         info: Fs_Info;
+                         sequence: Byte): Byte};
+    CONST
+        kDtc      = '     dtc';
+        kDta      = '     dta';
+        kDtm      = '     dtm';
+        kDtb      = '     dtb';
+        kDts      = '     dts';
+        kSize     = '    size';
+        kPsize    = '   psize';
+        kLpsize   = '  lpsize';
+        kFsOvrhed = 'fsOvrhed';
+        kFtype    = '   fType';
+        kEtype    = '   eType';
+        kFuidA    = '   fuidA';
+        kFuidB    = '   fuidB';
+        kLocked   = '  locked';
+        kProtectd = 'protectd';
+        kMachine  = ' machine';
+        kMaster   = '  master';
+        kSafety   = '  safety';
+        kSysType  = ' sysType';
+        kUsrType  = ' usrType';
+        kUsrSbtyp = 'usrSbtyp';
+        kOsClosed = 'osClosed';
+        kLeftOpen = 'leftOpen';
+        kScavnged = 'scavnged';
+        kRsltScav = 'rsltScav';
+    VAR
+        addr    : Longint;
+        kstr    : String[8];
+        i       : Integer;
+        loc     : Longint;
+    BEGIN
+        { First 500 bytes of second half of packet is spaces. The remainder
+          is cleared to NUL characters. }
+        addr := MemSet(data, 32, 3 + 512, 500);
+        addr := MemSet(data, 0, 3 + 1012, 12);
+
+        { Copy field name strings to appropriate locations. }
+        loc := Ord4(@kstr) + 1;
+        kstr := kDtc;
+        addr := MemCpy(loc, data, 3 + 512,       8);
+        kstr := kDta;
+        addr := MemCpy(loc, data, 3 + 512 +  20, 8);
+        kstr := kDtm;
+        addr := MemCpy(loc, data, 3 + 512 +  40, 8);
+        kstr := kDtb;
+        addr := MemCpy(loc, data, 3 + 512 +  60, 8);
+        kstr := kDts;
+        addr := MemCpy(loc, data, 3 + 512 +  80, 8);
+        kstr := kSize;
+        addr := MemCpy(loc, data, 3 + 512 + 100, 8);
+        kstr := kPsize;
+        addr := MemCpy(loc, data, 3 + 512 + 120, 8);
+        kstr := kLpsize;
+        addr := MemCpy(loc, data, 3 + 512 + 140, 8);
+        kstr := kFsOvrhed;
+        addr := MemCpy(loc, data, 3 + 512 + 160, 8);
+        kstr := kFtype;
+        addr := MemCpy(loc, data, 3 + 512 + 180, 8);
+        kstr := kEtype;
+        addr := MemCpy(loc, data, 3 + 512 + 200, 8);
+        kstr := kFuidA;
+        addr := MemCpy(loc, data, 3 + 512 + 220, 8);
+        kstr := kFuidB;
+        addr := MemCpy(loc, data, 3 + 512 + 240, 8);
+        kstr := kLocked;
+        addr := MemCpy(loc, data, 3 + 512 + 260, 8);
+        kstr := kProtectd;
+        addr := MemCpy(loc, data, 3 + 512 + 280, 8);
+        kstr := kMachine;
+        addr := MemCpy(loc, data, 3 + 512 + 300, 8);
+        kstr := kMaster;
+        addr := MemCpy(loc, data, 3 + 512 + 320, 8);
+        kstr := kSafety;
+        addr := MemCpy(loc, data, 3 + 512 + 340, 8);
+        kstr := kSysType;
+        addr := MemCpy(loc, data, 3 + 512 + 360, 8);
+        kstr := kUsrType;
+        addr := MemCpy(loc, data, 3 + 512 + 380, 8);
+        kstr := kUsrSbtyp;
+        addr := MemCpy(loc, data, 3 + 512 + 400, 8);
+        kstr := kOsClosed;
+        addr := MemCpy(loc, data, 3 + 512 + 420, 8);
+        kstr := kLeftOpen;
+        addr := MemCpy(loc, data, 3 + 512 + 440, 8);
+        kstr := kScavnged;
+        addr := MemCpy(loc, data, 3 + 512 + 460, 8);
+        kstr := kRsltScav;
+        addr := MemCpy(loc, data, 3 + 512 + 480, 8);
+
+        { Add a colon after every field name. }
+        FOR i := 1 TO 25 DO data[3 + 512 + i * 20 - 12] := 58;
+        { Add newlines after every field. }
+        FOR i := 1 TO 25 DO data[3 + 512 + i * 20 - 1] := 10;
+
+        { Write values into each field. Right padded with spaces, sorry! }
+        loc := YmDataAddr(data) + 512;
+        addr := WriteDec(loc +   9, info.dtc);
+        addr := WriteDec(loc +  29, info.dta);
+        addr := WriteDec(loc +  49, info.dtm);
+        addr := WriteDec(loc +  69, info.dtb);
+        addr := WriteDec(loc +  89, info.dts);
+        addr := WriteDec(loc + 109, info.size);
+        addr := WriteDec(loc + 129, info.psize);
+        addr := WriteDec(loc + 149, info.lpsize);
+        addr := WriteDec(loc + 169, info.fs_overhead);
+        addr := WriteDec(loc + 189, ord(info.ftype));
+        addr := WriteDec(loc + 209, ord(info.etype));
+        addr := WriteDec(loc + 229, info.fuid.a);
+        addr := WriteDec(loc + 249, info.fuid.b);
+        addr := WriteDec(loc + 269, ord(info.locked));
+        addr := WriteDec(loc + 289, ord(info.protected));
+        addr := WriteDec(loc + 309, info.machine_id);
+        addr := WriteDec(loc + 329, ord(info.master_file));
+        addr := WriteDec(loc + 349, ord(info.safety_on));
+        addr := WriteDec(loc + 369, info.system_type);
+        addr := WriteDec(loc + 389, info.user_type);
+        addr := WriteDec(loc + 409, info.user_subtype);
+        addr := WriteDec(loc + 429, ord(info.file_closed_by_os));
+        addr := WriteDec(loc + 449, ord(info.file_left_open));
+        addr := WriteDec(loc + 469, ord(info.file_scavenged));
+        addr := WriteDec(loc + 489, info.result_scavenge);
+
+        { Prepare tar file header in the first half of the packet. }
+        TarFileHdr(data, info.name, '.info', 500, ToEpoch(info.dtm));
+
+        { Add YModem packet header and CRC. }
+        InfoPacket := YmFinishPacket(data, sequence, true);
+    END;
+
+    PROCEDURE DataHdrPacket{VAR data: YModemBuffer; info: Fs_Info};
+    BEGIN
+        { Prepare tar file header in the first half of the packet. }
+        TarFileHdr(data, info.name, '.data', info.size, ToEpoch(info.dtm));
+    END;
+
+END.

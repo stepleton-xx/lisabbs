@@ -1,0 +1,295 @@
+{ Routines for outbound transfer of Lisa files and file metadata using YModem }
+{ For each file sent, a specially-made TAR archive is built on-the-fly }
+UNIT XferXfer;
+
+INTERFACE
+
+USES
+    {$U SysCall.Obj}        SysCall,
+    {$U Xfer/LibAsm.Obj}    XferAsm,
+    {$U Xfer/LibData.Obj}   XferData,
+    {$U Xfer/LibPort.Obj}   XferPort;
+
+TYPE
+    { Phases of outbound YModem file transfer; used mainly for error reporting }
+    { "Transferring" refers to a complete round trip: data heads outbound and
+      an ACK returns from the recipient }
+    YmTxPhase = (kYmTxOpenFile,  { Opening the file to send }
+                 kYmTxStart   ,  { Awaiting 'C' from peer to start first file }
+                 kYmTxHeader  ,  { Transferring the file header packet }
+                 kYmTxFileData,  { Transferring any file data }
+                 kYmTxEot     ,  { Transferring the end of file marker }
+                 kYmTxRestart ,  { Awaiting 'C' from peer to start next file }
+                 kYmTxFooter  ,  { Transferring "no file" file header packet }
+                 kYmTxDone);     { File sent successfully }
+
+{ PROCEDURES AND FUNCTIONS }
+
+    { Return a printable string corresponding to a YmTxPhase }
+    FUNCTION YmPhaseName(phase: YmTxPhase): String[20];
+
+    { Transmit a file across a bidirectional connection via YModem }
+    { Uses YModem to transfer a single file from this machine to a peer using
+      the YModem protocol. What's actually sent is a TAR archive with three
+      files inside:
+        - a Unix text file containing filesystem metadata
+        - a file containing the contents of the file's label
+        - a file containing the contents of the file itself.
+      Even though a single file is transmitted, the YModem batch transfer
+      protocol is used to provide the peer with filename and size information,
+      facilitating progress display. }
+    { Notes: port_fd should be configured for nonblocking I/O
+             Consider flushing lookahead buffer before calling }
+    { Args - name: name of file to send
+          port_fd: bidirectional channel file reference number
+            final: this is the last (or only) file (otherwise chain calls)
+         callback: callback for local progress display
+         errphase: transfer phase where fatal error was encountered, if any
+            errno: OS error number of the fatal error, if any; 0 otherwise }
+    { -1 errno indicates an internal error
+      -2 errno indicates timeout }
+    PROCEDURE YmTxFile(name: PathName; port_fd: Integer; final: Boolean;
+                       { Callback for local display of transfer progress }
+                       { Args - phase: current transfer phase
+                           bytes_sent: TAR file bytes sent so far
+                          bytes_total: total TAR file bytes to send
+                               errors: count of recoverable errors encountered }
+                       PROCEDURE ProgressCallback(phase:       YmTxPhase;
+                                                  bytes_sent:  Longint;
+                                                  bytes_total: Longint;
+                                                  errors:      Integer);
+                       VAR errphase: YmTxPhase; VAR errno: Integer);
+
+    { A do-nothing ProgressCallback if no callback is desired }
+    PROCEDURE NullProgressCallback(phase:       YmTxPhase;
+                                   bytes_sent:  Longint;
+                                   bytes_total: Longint;
+                                   errors:      Integer);
+
+IMPLEMENTATION
+
+    FUNCTION YmPhaseName{phase: YmTxPhase): String[20]};
+    BEGIN
+        CASE phase OF
+            kYmTxOpenFile:  YmPhaseName := 'open file';
+            kYmTxStart:     YmPhaseName := 'wait on receiver (1)';
+            kYmTxHeader:    YmPhaseName := 'send file header';
+            kYmTxFileData:  YmPhaseName := 'send file data';
+            kYmTxEot:       YmPhaseName := 'send end marker';
+            kYmTxRestart:   YmPhaseName := 'wait on receiver (2)';
+            kYmTxFooter:    YmPhaseName := 'send "done" header';
+            kYmTxDone:      YmPhaseName := 'transfer successful';
+            OTHERWISE       YmPhaseName := '?unknown xfer phase?';
+        END;
+    END;
+
+    { Helper for YmTxFile: wait for receiver to initiate transfer }
+    FUNCTION YmTxStart(port_fd:    Integer;
+                       VAR oopses: Integer;
+                       VAR errno:  Integer): Boolean;
+    VAR
+        unused:  Byte;
+    BEGIN
+        IF PolledAwait(fd, [kCee], unused, oopses, 60000, 1000, errno) THEN BEGIN
+            oopses := oopses - 1;  { A valid byte is not an "oops" }
+            YmTxStart := true;
+        END ELSE BEGIN
+            IF errno = 0 THEN errno := -2;  { Timeout; else errno already set }
+            YmTxStart := false;
+        END;
+    END;
+
+    { Helper for YmTxFile: send a packet and await ACK }
+    FUNCTION YmRoundTrip(port_fd:    Integer;
+                         data:       YModemBuffer;
+                         VAR oopses: Integer;
+                         VAR errno:  Integer): Boolean;
+    VAR
+        is_serial:  Boolean;
+        p:          Port;
+        size:       Integer;
+        actual:     Longint;
+        unused:     Byte;
+    BEGIN
+        YmRoundTrip := false;  { Assume failure by default }
+
+        is_serial := RefnumToPort(port_fd, p, errno);
+        IF errno <> 0 THEN Exit(YmRoundTrip);
+
+        { Figure out the size of the packet we're sending }
+        { For code reuse that's slightly overkill but probably not all that
+          bad, we also use this function to send the one-byte EOT end-of-file
+          marker }
+        CASE data[0] OF
+            kEot:    size := 1;
+            kSoh:    size := 128;
+            kStx:    size := 1024;
+        OTHERWISE BEGIN
+                errno := -1;  { Misconfiguration }
+                Exit(YmRoundTrip);
+	    END;
+        END;
+
+        { Try ten times for a packet round trip }
+        FOR i := 1 to 10 DO BEGIN
+            { Attempt to send the packet }
+            IF is_serial THEN BEGIN
+                TimedWrite(p, port_fd, data, size, actual, 1, errno);
+            END ELSE BEGIN
+                PolledWrite(port_fd, data, size, actual, 1, errno);
+            END;
+
+            { Critical send error; fail }
+            { Note: it's TimedWrite/PolledWrite's job to ensure full writes }
+            IF errno <> 0 OR actual <> size THEN BEGIN
+                oopses := oopses + 1;
+                Exit(YmRoundTrip);
+            END;
+
+            { Attempt to receive an ACK; if received, return successfully }
+            IF PolledAwait(fd, [kAck], unused, actual,
+                           10000, 100, errno) THEN BEGIN
+                YmRoundTrip := true;
+                Exit(YmRoundTrip);
+            END;
+        END;
+
+        { Return in failure }
+    END;
+
+    PROCEDURE YmTxFile{name: PathName; port_fd: Integer; final: Boolean;
+                       PROCEDURE ProgressCallback(phase:       YmTxPhase;
+                                                  bytes_sent:  Longint;
+                                                  bytes_total: Longint;
+                                                  errors:      Integer);
+                       VAR errphase: YmTxPhase; VAR errno: Integer};
+    VAR
+        oopses:    Integer;
+        progress:  Longint;
+        file_fd:   Integer;
+        stat:      Fs_Info;
+        size:      Longint;
+        buffer:    YModemBuffer;
+        seq:       Integer;
+        actual:    Longint;
+
+        { Helper: compute size of the tar file we send over the wire }
+        FUNCTION TarFileSize(stat: Fs_Info): Longint;
+        VAR
+            size: Longint;
+        BEGIN
+            { Filesize (in bytes):
+                512 (tar header) + 512 (filesystem metadata) +
+                512 (tar header) + 512 (file label data) +
+                512 (tar header) + N
+              where N is the size of the file itself, rounded up to the nearest
+              larger multiple of 512 }
+            size := 2560 + 512 * (stat.size div 512);
+            IF stat.size mod 512 > 0 THEN size := size + 512;
+            TarFileSize := size;
+        END;
+
+    BEGIN
+        oopses := 0;
+        progress := 0;
+
+        errphase := kYmTxOpenFile;  { PHASE 1: File opening }
+        ProgressCallback(errphase, progress, size, oopses);
+        { Open the file to send, and stat it }
+        Open(errno, name, file_fd, [Dread]);
+        IF errno <> 0 THEN Exit(YmTxFile);
+        Info(errno, file_fd, stat);
+        IF errno <> 0 THEN Exit(YmTxFile);
+        size := TarFileSize(stat);
+
+        errphase := kYmTxStart;     { PHASE 2: Await transfer initiation }
+        ProgressCallback(errphase, progress, size, oopses);
+        IF NOT YmTxStart(port_fd, oopses, errno) THEN Exit(YmTxFile);
+
+        errphase := kYmTxHeader;    { PHASE 3: Send header, await ACK + init }
+        ProgressCallback(errphase, progress, size, oopses);
+        seq := YmFileHdrPacket(buffer, stat.name, size, stat.DTM);
+        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Exit(YmTxFile);
+        IF NOT YmTxStart(port_fd, oopses, errno) THEN Exit(YmTxFile);
+
+        errphase := kYmTxFileData;  { PHASE 4: Send file data, await ACKs }
+        ProgressCallback(errphase, progress, size, oopses);
+
+        seq := InfoPacket(buffer, stat, seq);   { Filesystem metadata }
+        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Exit(YmTxFile);
+        progress := progress + 1024;
+        ProgressCallback(errphase, progress, size, oopses);
+
+        seq := LabelPacket(buffer, stat, seq);  { File label data }
+        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Exit(YmTxFile);
+        progress := progress + 1024;
+        ProgressCallback(errphase, progress, size, oopses);
+
+        DataHdrPacket(buffer, stat);            { Beginning of file }
+        Read_Data(
+            errno, file_fd, Ord4(@buffer) + 512, 512, actual, Sequential, 0);
+        IF errno <> 0 THEN Exit(YmTxFile);
+        seq := YmFinishPacket(buffer, seq, true {big!});
+        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Exit(YmTxFile);
+        { ProgressCallback gets TAR file bytes sent so far, not raw bytes sent
+          out over the wire, so special handling for a 0-byte file }
+        IF actual = 0 THEN progress := progress + 512
+                      ELSE progress := progress + 1024;
+        ProgressCallback(errphase, progress, size, oopses);
+
+        WHILE actual >= 512 DO BEGIN            { Remainder of file }
+            { Read first 512-byte chunk into the packet }
+            Read_Data(
+                errno, file_fd, Ord4(@buffer), 512, actual, Sequential, 0);
+            IF errno <> 0 THEN Exit(YmTxFile);
+            progress := progress + 512;
+
+            { If we didn't hit EOF, read the next 512-byte chunk }
+            IF actual >= 512 THEN BEGIN
+                Read_Data(errno, file_fd, Ord4(@buffer) + 512, 512, actual,
+                          Sequential, 0);
+                IF errno <> 0 THEN Exit(YmTxFile);
+                progress := progress + 512;
+            END;
+
+            { Send this packet }
+            seq := YmFinishPacket(buffer, seq, true {big!});
+            IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN BEGIN
+                Exit(YmTxFile);
+            END;
+            ProgressCallback(errphase, progress, size, oopses);
+        END;
+
+        errphase := kYmTxEot;       { PHASE 5: Send EOT, await ACK }
+        ProgressCallback(errphase, progress, size, oopses);
+        buffer[0] := kEot;
+        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Exit(YmTxFile);
+
+        IF final THEN BEGIN
+            errphase := kYmTxRestart;   { PHASE 6: Await re-initiation }
+            ProgressCallback(errphase, progress, size, oopses);
+            IF NOT YmTxStart(port_fd, oopses, errno) THEN Exit(YmTxFile);
+
+            errphase := kYmTxRestart;   { PHASE 7: Send empty header }
+            ProgressCallback(errphase, progress, size, oopses);
+            seq := YmEmptyFileHdrPacket(buffer);
+            IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN BEGIN
+                Exit(YmTxFile);
+            END;
+        END;
+
+        errphase := kYmTxDone;      { PHASE 0: All done }
+        ProgressCallback(errphase, progress, size, oopses);
+        { No error, all went well }
+        errno := 0;
+    END;
+
+    PROCEDURE NullProgressCallback{phase:       YmTxPhase;
+                                   bytes_sent:  Longint;
+                                   bytes_total: Longint;
+                                   errors:      Integer};
+    BEGIN
+        { Do nothing }
+    END;
+
+END.
