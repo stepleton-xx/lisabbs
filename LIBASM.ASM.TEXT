@@ -1,5 +1,5 @@
 kSoh    .EQU    $1              ; YModem packet has 128 bytes of data.
-kStx    .EQU    $2              ; YModem packed has 1024 bytes of data.
+kStx    .EQU    $2              ; YModem packet has 1024 bytes of data.
 
 kTDelta .EQU    $81C94B00       ; Seconds from 1/1/1901 to 1/1/1970 (at 00:00).
 
