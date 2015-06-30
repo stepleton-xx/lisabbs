@@ -4,7 +4,8 @@ UNIT XferPort;
 INTERFACE
 
 USES
-    {$U SysCall.Obj}    SysCall;
+    {$U SysCall.Obj}        SysCall,
+    {$U Xfer/LibAsm.Obj}    XferAsm;
 
 CONST
     kPortAPath = '-RS232A-FOOBAR';
@@ -88,8 +89,9 @@ TYPE
         moda_conn:  Integer;  { Seconds to wait for modem to connect }
     END;
 
-    { A set of byte values }
-    ByteSet = SET OF -128..127;
+    { A set of ASCII values }
+    { We'd allow any 8-bit byte, but SETs can't hold negative integers }
+    AsciiByteSet = SET OF Byte;
 
 { PROCEDURES AND FUNCTIONS }
 
@@ -176,7 +178,7 @@ TYPE
             frequent polling may yield a much longer polling interval }
     { -1 errno indicates invalid params; no details, not rigorously checked }
     FUNCTION PolledAwait(fd: Integer;
-                         bytes: ByteSet; VAR byte_read: -128..127;
+                         bytes: AsciiByteSet; VAR byte_read: Byte;
                          VAR actual: Longint;
                          millis, poll_int: Longint;
                          VAR errno: Integer): Boolean;
@@ -764,14 +766,14 @@ IMPLEMENTATION
     END;
 
     FUNCTION PolledAwait{(fd: Integer;
-                          bytes: ByteSet; VAR byte_read: -128..127;
+                          bytes: AsciiByteSet; VAR byte_read: Byte;
                           VAR actual: Longint;
                           millis, poll_int: Longint;
                           VAR errno: Integer): Boolean};
     VAR
         ok:      Boolean;
         polls:   Longint;
-        actual:  Longint;
+        total:   Longint;
         tspec:   Timestmp_Interval;
         tm:      Time_Rec;
     BEGIN
@@ -801,7 +803,7 @@ IMPLEMENTATION
             IF errno <> 0 THEN Exit(PolledAwait);
 
             IF total >= 0 THEN BEGIN
-                actual := actual + 1;
+                actual := actual + total;
                 { Break if we've read a byte we're looking for }
                 IF byte_read IN bytes THEN BEGIN
                     PolledAwait := true;
@@ -840,11 +842,13 @@ IMPLEMENTATION
         FUNCTION GetTimer(VAR errno: Integer): Longint;
         VAR
             cparm:  DcType;
+            path:   Pathname;
         BEGIN
+            path := '-MAINCONSOLE';
             errno := 0;             { Assume success by default }
             cparm.dcversion := 2;   { This field is always 2 }
             cparm.dccode := dvGetEvent;
-            Device_Control(errno, '-MAINCONSOLE', cparm);
+            Device_Control(errno, path, cparm);
             GetTimer := cparm.dcdata[3];
         END;
 
@@ -976,14 +980,14 @@ IMPLEMENTATION
         PathToPort := false;  { Assume not a serial port by default }
 
         IF path[0] <> '-' THEN Exit(PathToPort);
-        IF path[1] <> 'R' AND path[1] <> 'r' THEN Exit(PathToPort);
-        IF path[2] <> 'S' AND path[2] <> 's' THEN Exit(PathToPort);
+        IF (path[1] <> 'R') AND (path[1] <> 'r') THEN Exit(PathToPort);
+        IF (path[2] <> 'S') AND (path[2] <> 's') THEN Exit(PathToPort);
         IF path[3] <> '2' THEN Exit(PathToPort);
         IF path[4] <> '3' THEN Exit(PathToPort);
         IF path[5] <> '2' THEN Exit(PathToPort);
 
-             IF path[6] = 'A' OR path[6] = 'a' THEN p := kPortA;
-        ELSE IF path[6] = 'B' OR path[6] = 'b' THEN p := kPortB;
+             IF (path[6] = 'A') OR (path[6] = 'a') THEN p := kPortA
+        ELSE IF (path[6] = 'B') OR (path[6] = 'b') THEN p := kPortB
         ELSE Exit(PathToPort);
 
           IF length(path) = 7 THEN PathToPort := true
