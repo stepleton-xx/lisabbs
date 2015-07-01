@@ -2,10 +2,12 @@
 PROGRAM LisaBBS;
 
 USES
-    {$U PasLibCall.Obj}  PasLibCall,
-    {$U LibPort.Obj}     XferPort,
-    {$U LibShell.Obj}    XferShell,
-    {$U LibUi.Obj}       XferUi;
+    {$U SysCall.Obj}         SysCall,
+    {$U PasLibCall.Obj}      PasLibCall,
+    {$U Xfer/LibAsm.Obj}     XferAsm,
+    {$U Xfer/LibPort.Obj}    XferPort,
+    {$U Xfer/LibUi.Obj}      XferUi;
+    {$U Xfer/LibShell.Obj}   XferShell,
 
 VAR
     p:         Port;
@@ -37,7 +39,7 @@ BEGIN
     UiInit(p, fd);
 
     { Start the shell }
-    XferShell;
+    RunXferShell;
 
     { Cleanup }
     WriteLn('That''s All, Folks!');

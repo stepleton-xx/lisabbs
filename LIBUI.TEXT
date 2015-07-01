@@ -30,6 +30,19 @@ TYPE
     { A string type for text to show on port and console displays }
     DisplayLine = String[80];
 
+    { For specifying coordinates on both the port and console displays }
+    ScreenCol = 0..79;
+    ScreenRow = 0..23;
+
+    { For specifying limits on user input line size }
+    InputLength = 0..255;
+
+    { Strings of various lengths }
+    Str255 = String[255];
+    Str50  = String[50];
+    Str20  = String[20];
+    Str10  = String[10]
+
 VAR
     { Serial port handles }
     ui_p:        Port;
@@ -59,7 +72,7 @@ VAR
     PROCEDURE UiClearScreen;
 
     { Display a line of text on the specified row }
-    PROCEDURE UiPutLine(row: 0..23; line_text: DisplayLine);
+    PROCEDURE UiPutLine(row: ScreenRow; line_text: DisplayLine);
 
     { Poll for one character of user input without echo; 0 if no char waiting }
     FUNCTION UiPollChar: Char;
@@ -71,7 +84,7 @@ VAR
     PROCEDURE UiPutChar(ch: Char);
 
     { Retrieve a line of text from the user }
-    PROCEDURE UiGetLine(VAR typed: String[255]; count: 0..255);
+    PROCEDURE UiGetLine(VAR typed: Str255; count: InputLength);
 
     { Display text on the status line (Lisa display only) }
     PROCEDURE UiPutStatus(line_text: DisplayLine);
@@ -84,18 +97,18 @@ VAR
     { Progress ranges in [0, 999], negative progress clears progress line }
     { 50 characters are available beyond the end of the progress bar for
       text in info }
-    PROCEDURE UiPutProgress(progress: Integer; info: String[50]);
+    PROCEDURE UiPutProgress(progress: Integer; info: Str50);
 
     { Helpers for constructing DisplayLine values (where else to put them?) }
-    { Return a string representation of an unsigned 32-bit integer }
-    FUNCTION UintToStr(value: Integer): String[10];
+    { Compute a string representation of an unsigned 32-bit integer }
+    PROCEDURE UintToStr(value: Integer; uint_str: Str10);
 
 IMPLEMENTATION
 
     { Initialize the UI system with information about an open serial port }
     PROCEDURE UiInit{p: Port; fd: Integer};
     BEGIN
-        ui_p := port;
+        ui_p := p;
         ui_fd := fd;
         Reset(kinput, '-KEYBOARD');
         Reset(stderr, '-ALTCONSOLE');
@@ -104,7 +117,7 @@ IMPLEMENTATION
     { Helper: write the current contents of port_buf to the serial port }
     PROCEDURE SendPortBuf;
     VAR
-        actual:  Integer;
+        actual:  Longint;
         errno:   Integer;
     BEGIN
         TimedWrite(ui_p, ui_fd, Ord4(@port_buf) + 1, Length(port_buf),
@@ -112,14 +125,13 @@ IMPLEMENTATION
              IF errno <> 0 THEN UiPutError(errno, '')
         ELSE IF actual <> Length(port_buf) THEN BEGIN
             { Note abuse of UiPutError with subsequent Write call }
-            UiPutError('wrote ');
+            UiPutError(0, 'wrote ');
             Write(output, actual, ' bytes instead of ', Length(port_buf), '.');
         END;
     END;
 
-    FUNCTION UintToStr{(value: Integer): String[10]};
+    PROCEDURE UintToStr{value: Integer; uint_str: Str10};
     VAR
-        uint_str:   String[10];
         startaddr:  Longint;
         endaddr:    Longint;
         len:        Integer;
@@ -129,11 +141,10 @@ IMPLEMENTATION
         endaddr    := WriteDec(startaddr, value);
         len        := endaddr - startaddr;
         IF len < 10 THEN Delete(uint_str, len + 1, 10 - len);  { Truncate }
-        UintToStr := uint_str;
     END;
 
     { Helper: add a <ESC>[ escape code to the end of the port_buf buffer }
-    PROCEDURE AppendEscapeCode(code: String[20]);
+    PROCEDURE AppendEscapeCode(code: Str20);
     VAR
         old_len:  Integer;
     BEGIN
@@ -143,19 +154,23 @@ IMPLEMENTATION
         port_buf[old_len + 1] := Chr(27);  { Replace 'e' with ESC }
     END;
 
-    { Helper: return a VT100 cursor movement code }
-    FUNCTION Vt100GoToXY(col: 0..79, row: 0..23): String[10];
+    { Helper: compute a VT100 cursor movement code }
+    FUNCTION Vt100GoToXY(col: ScreenCol; row: ScreenRow; VAR goto_code: Str10);
+    VAR
+        row_str: Str10;
+        col_str: Str10;
     BEGIN
-        Vt100GoToXY := Concat(UintToStr(Ord(row) + 1), ';',
-                              UintToStr(Ord(col) + 1), 'H');
+        UintToStr(Ord(row) + 1, row_str);
+        UintToStr(Ord(col) + 1, col_str);
+        goto_code := Concat(row_str, ';', col_str, 'H');
     END;
 
-    FUNCTION UiGetPort: Port;
+    FUNCTION UiGetPort{: Port};
     BEGIN
-        UiGetPort := ui_port;
+        UiGetPort := ui_p;
     END;
 
-    FUNCTION UiGetFd: Integer;
+    FUNCTION UiGetFd{: Integer};
     BEGIN
         UiGetFd := ui_fd;
     END;
@@ -173,7 +188,9 @@ IMPLEMENTATION
         SendPortBuf;
     END;
 
-    PROCEDURE UiPutLine{row: 0..23, line_text: DisplayLine};
+    PROCEDURE UiPutLine{row: ScreenRow, line_text: DisplayLine};
+    VAR
+        goto_code:  Str10;
     BEGIN
         { First, the console display }
         GoToXY(0, row);
@@ -182,17 +199,18 @@ IMPLEMENTATION
 
         { Next, the serial port }
         port_buf := '';
-        AppendEscapeCode(Vt100GoToXY(0, row));  { Move to selected row }
-        AppendEscapeCode('2K');                 { Clear line }
+        Vt100GoToXY(0, row, goto_code);
+        AppendEscapeCode(goto_code);  { Move to selected row }
+        AppendEscapeCode('2K');       { Clear line }
         Insert(line_text, port_buf, Length(port_buf) + 1);
         SendPortBuf;
     END;
 
-    FUNCTION UiPollChar: Char;
+    FUNCTION UiPollChar{: Char};
     VAR
         ch:      Char;
         b:       Byte;
-        actual:  Integer;
+        actual:  Longint;
         errno:   Integer;
     BEGIN
         ch := Chr(0);  { Assume no character by default }
@@ -217,7 +235,7 @@ IMPLEMENTATION
         END;
     END;
 
-    FUNCTION UiGetChar: Char;
+    FUNCTION UiGetChar{: Char};
     VAR
         ch:     Char;
         tspec:  Timestmp_Interval;
@@ -244,28 +262,30 @@ IMPLEMENTATION
         SendPortBuf;
     END;
 
-    PROCEDURE UiGetLine{VAR typed: String[255]; count: 0..255};
+    PROCEDURE UiGetLine{VAR typed: Str255; count: InputLength};
     VAR
         one_ch:  String[1];
     BEGIN
         typed  := '';
         one_ch := '@';
 
-        WHILE count > 0 DO BEGIN
+        WHILE true DO BEGIN
             one_ch[1] := UiGetChar;
 
             { Break on LF or CR }
-            IF one_ch[1] IN [Chr(10), Chr(13)] THEN Exit(UiPrompt);
+            IF one_ch[1] IN [Chr(10), Chr(13)] THEN Exit(UiGetLine);
 
-            { Drop last char on BS or DEL, otherwise keep char }
+            { Drop last char on BS or DEL, otherwise keep char... }
             IF one_ch[1] IN [Chr(8), Chr(127)] THEN BEGIN
                 IF Length(typed) > 0 THEN BEGIN
                     Delete(typed, Length(typed), 1);
-                    port_buf := Chr(8) + ' ' + Chr(8);
+                    port_buf := '@ @';
+                    port_buf[1] := Chr(8);
+                    port_buf[3] := Chr(8);
                     SendPortBuf;
                     count := count + 1;
                 END;
-            END ELSE BEGIN
+            END ELSE IF count > 0 THEN BEGIN  { ...unless we're at max length }
                 Insert(one_ch, typed, Length(typed) + 1);
                 UiPutChar(one_ch[1]);  { echo back to user }
                 count := count - 1;
@@ -285,7 +305,7 @@ IMPLEMENTATION
         GoToXY(0, kRowIoErrors);
         ScreenCtr(CclearELine);
 
-        IF errno = 0 AND message = '' THEN Exit(UiPutError);  { Clear display }
+        IF (errno = 0) AND (message = '') THEN Exit(UiPutError);  { Clear only }
 
         { Error output to the screen }
         IF errno = 0 THEN Write(output, 'Error')
@@ -297,17 +317,18 @@ IMPLEMENTATION
                      ELSE WriteLn(stderr, 'Error ', errno, ': ', message);
     END;
 
-    PROCEDURE UiPutProgress{progress: Integer; info: String[50]};
+    PROCEDURE UiPutProgress{progress: Integer; info: Str50};
     LABEL
         1111;
     VAR
         dline:  DisplayLine;
         count:  Integer;
+        i:      Integer;
     BEGIN
-        IF progress < 0 THEN BEGIN  { Clear progress line }
-            UiPutLine(kRowXferProgress, '');
-            Exit(UiPutProgress);
-        END;
+        GoToXY(0, kRowXferProgress);
+        ScreenCtr(CclearELine);
+
+        IF progress < 0 THEN Exit(UiPutProgress);  { Clear only }
 
         { Draw progress bar; note 27 'ticks' inside, and 27*37 = 999 }
         dline := '[                           ] ';
@@ -319,7 +340,7 @@ IMPLEMENTATION
         END; 1111:
 
         Insert(info, dline, Length(dline) + 1);
-        UiPutLine(kRowXferProgress, dline);
+        Write(output, dline);
     END;
 
 END.
