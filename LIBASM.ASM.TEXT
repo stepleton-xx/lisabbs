@@ -228,10 +228,10 @@ done    MOVE.L  D0,(A7)         ; Move recovered longint onto the stack.
 .ASCII  'GETLONG '              ; Function name for the debugger.
 
 
-; FUNCTION SetYmHdr(VAR data: YModemBuffer; sequence: Byte; big: Boolean): Byte;
+; FUNCTION YmSetHdr(VAR data: YModemBuffer; sequence: Byte; big: Boolean): Byte;
 ; EASy68K checked.
 
-.FUNC   SetYmHdr
+.FUNC   YmSetHdr
 
         MOVE.L  (A7)+,A0        ; Save return address.
         MOVE.W  (A7)+,D0        ; Whether it's a 1k buffer (vs. 128k).
@@ -253,7 +253,7 @@ setseq  MOVE.B  D1,(A1)+        ; Copy seq. byte to buffer byte 2 (note incr.)
         MOVE.B  D1,(A7)         ; Place incremented seq. byte on the stack.
         JMP     (A0)            ; Return to caller.
 
-.ASCII  'SETYMHDR'              ; Function name for the debugger.
+.ASCII  'YMSETHDR'              ; Function name for the debugger.
 
 
 ; FUNCTION NotByte(value: Byte): Byte;

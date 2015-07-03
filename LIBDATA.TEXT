@@ -6,8 +6,8 @@ UNIT XferData;
 INTERFACE
 
 USES
-    {$U Xfer/LibAsm.Obj}   XferAsm,
     {$U SysCall.Obj}       SysCall;
+    {$U Xfer/LibAsm.Obj}   XferAsm,
 
 CONST
     kSoh = 1;   { YModem packet has 128 bytes of data. }
@@ -18,6 +18,14 @@ CONST
     kCee = 67;  { Capital C (initiate transfer). }
 
 { PROCEDURES AND FUNCTIONS }
+
+    { Get starting address for payload data in a YModem packet. Result is
+      suitable for supplying as the Data_Addr argument to Read_Data.
+
+          data: YModem packet in memory.
+
+      Returns the starting address for payload data in a YModem packet. }
+    FUNCTION YmDataAddr(data: YModemBuffer): Longint;
 
     { Set header and CRC for a YModem packet containing arbitrary data.
 
@@ -114,13 +122,8 @@ IMPLEMENTATION
     (* YModem routines *)
     (*******************)
 
-    { Get starting address for payload data in a YModem packet. Result is
-      suitable for supplying as the Data_Addr argument to Read_Data.
-
-          data: YModem packet in memory.
-
-      Returns the starting address for payload data in a YModem packet. }
-    FUNCTION YmDataAddr(data: YModemBuffer): Longint;
+    { Public routine, documented above }
+    FUNCTION YmDataAddr{(data: YModemBuffer): Longint};
     BEGIN
         YmDataAddr := Ord4(@data) + 3;
     END;
@@ -133,10 +136,10 @@ IMPLEMENTATION
     BEGIN
         IF big THEN BEGIN
             crc := CalcCrc(data, 3, 1024);
-            PutLong(data, 1027, crc);
+            PutInt(data, 1027, crc);
         END ELSE BEGIN
             crc := CalcCrc(data, 3, 128);
-            PutLong(data, 131, crc);
+            PutInt(data, 131, crc);
         END;
         YmFinishPacket := YmSetHdr(data, sequence, big);
     END;
@@ -182,10 +185,10 @@ IMPLEMENTATION
         { Place size and modification time after filename. }
         addr := WriteDec(addr, size);
         addr := WriteSpc(addr);
-        addr := WriteOct(addr, ToEpoch(mtime), false);
+        addr := WriteOct(addr, ToEpoch(mtime), false { No zero padding });
 
         { This packet's sequence number is always 0. }
-        YmFileHdrPacket := YmFinishPacket(data, 0, false);
+        YmFileHdrPacket := YmFinishPacket(data, 0, false { Not a big packet });
     END;
 
     { Public routine, documented above }
@@ -233,19 +236,21 @@ IMPLEMENTATION
         addr := MemSet(data, 0, base, 512);
 
         { Copy in the file name and suffix. }
-        addr := MemCpy(  Ord4(@name) + 1, data,                base, length(name));
-        addr := MemCpy(Ord4(@suffix) + 1, data, base + length(name), length(suffix));
+        addr := MemCpy(  Ord4(@name) + 1,
+                       data, base               , length(name));
+        addr := MemCpy(Ord4(@suffix) + 1,
+                       data, base + length(name), length(suffix));
 
         { Copy phony UNIX mode, uid, and gid. }
         kstr := kMode;
-        addr := MemCpy(  Ord4(@kstr) + 1, data,          base + 100, 7);
+        addr := MemCpy(  Ord4(@kstr) + 1, data, base + 100, 7);
         kstr := kUid;
-        addr := MemCpy(  Ord4(@kstr) + 1, data,          base + 108, 7);
+        addr := MemCpy(  Ord4(@kstr) + 1, data, base + 108, 7);
         kstr := kGid;
-        addr := MemCpy(  Ord4(@kstr) + 1, data,          base + 116, 7);
+        addr := MemCpy(  Ord4(@kstr) + 1, data, base + 116, 7);
 
         { Write file size and mtime. }
-        addr := WriteOct(Ord4(@data) + base + 124,  size, true);
+        addr := WriteOct(Ord4(@data) + base + 124,  size, true { zero pad });
         addr := WriteOct(Ord4(@data) + base + 136, mtime, true);
 
         { Write blank (spaces) checksum, plus NUL, plus space. }
@@ -256,7 +261,7 @@ IMPLEMENTATION
 
         { Copy first part of magic number, then set rest by hand. }
         kstr := kUstar;
-        addr := MemCpy(  Ord4(@kstr) + 1, data,          base + 257, 5);
+        addr := MemCpy(  Ord4(@kstr) + 1, data, base + 257, 5);
         { base + 262 is NUL. }
         data[base + 263] := 48;
         data[base + 264] := 48;

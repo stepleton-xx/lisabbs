@@ -56,7 +56,7 @@ TYPE
     { Return the bitwise not of the argument byte. }
     FUNCTION NotByte(value: Byte): Byte;
 
-    { Write unsigned value in octal, without padding, starting at address.
+    { Write unsigned value in octal, with or sans padding, starting at address.
       Returns the address one byte past the end of the written number. }
     FUNCTION WriteOct(address, value: Longint; zero_padding: Boolean): Longint;
 

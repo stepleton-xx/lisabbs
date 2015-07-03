@@ -155,7 +155,7 @@ IMPLEMENTATION
     END;
 
     { Helper: compute a VT100 cursor movement code }
-    FUNCTION Vt100GoToXY(col: ScreenCol; row: ScreenRow; VAR goto_code: Str10);
+    PROCEDURE Vt100GoToXY(col: ScreenCol; row: ScreenRow; VAR goto_code: Str10);
     VAR
         row_str: Str10;
         col_str: Str10;
