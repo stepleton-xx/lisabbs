@@ -25,12 +25,12 @@ TYPE
         d_page:  Integer;                 { Current page; first page is 0 }
         d_final: Boolean;                 { This is the last page for this dir }
         d_entry: ARRAY[1..20] OF E_Name;  { Files to show in this page }
-        d_size:  Integer;                 { Number of files in the page }
+        d_size:  Integer;                 { Number of entries in the page }
 
-        { User can tag files for batch operations }
-        { Tag N means the Nth file encountered in a directory listing }
+        { User can tag entries for batch operations }
+        { Tag N means the Nth entry encountered in a directory listing }
         tagged:  SET OF TagIndices;
-        n_tags:  Integer;  { Number of files tagged }
+        n_tags:  Integer;  { Number of entries tagged }
     END;
 
 { PROCEDURES AND FUNCTIONS }
@@ -66,7 +66,7 @@ IMPLEMENTATION
         i:      Integer;
         dline:  DisplayLine;
     BEGIN
-        { Show this page of entries }
+        { Show the entries on this page }
         FOR i := 1 TO state.d_size DO BEGIN
             dline := ' @)  ';
             dline[2] := Chr(64 + i);  { '@' + i; i = 1 gives us 'A' }
@@ -121,7 +121,7 @@ IMPLEMENTATION
                     UintToStr(errno, errno_str);
                     state.d_entry[i] := Concat(
                         '-- Error ', errno_str, ' reading dir! --');
-                END
+                END;
                 state.d_size := state.d_size + 1;
             END;
         END; 1111:  { statement needed here? }
@@ -386,11 +386,14 @@ IMPLEMENTATION
     FUNCTION NextTaggedFile(VAR state: ShellState;
                             VAR index: Integer;  { start with 0 }
                             VAR name:  E_Name): Boolean;
+    VAR
+        got_next:  Boolean;
     BEGIN
         REPEAT
-            NextTaggedFile := NextAnyFile(state, index, name);
+            got_next := NextAnyFile(state, index, name);
+            NextTaggedFile := got_next;
             IF index IN state.tagged THEN Exit(NextTaggedFile);
-        UNTIL NOT NextTaggedFile;
+        UNTIL NOT got_next;
     END;
 
     { LibXfer ProgressCallback implementation for file transfers }
@@ -415,7 +418,7 @@ IMPLEMENTATION
         UintToStr(bytes_total, btotal_str);
         YmPhaseName(phase, phase_str);
         UintToStr(errors, errors_str);
-        info := Concat(bsent_str, '/', btotal_str, ', errs:',
+        info := Concat(bsent_str, '/', btotal_str, ', errs: ',
                        errors_str, '. ', phase_str);
         progress := 999 * bytes_total div bytes_sent;
         UiPutProgress(progress, info);
@@ -639,7 +642,7 @@ IMPLEMENTATION
                 'N','n',' ':    action := kActNext;  { Next page }
                 'P','p':        OpPagePrev(state);
                 'O','o':        OpOnline(state);
-                'C','c':        BEGIN OpChdir(state); action := kActNext; END
+                'C','c':        BEGIN OpChdir(state); action := kActNext; END;
                 'T','t':        OpTagToggle(state);
                 'S','s':        OpSendTagged(state);
                 'A','a':        OpSendAll(state);

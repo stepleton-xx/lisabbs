@@ -101,7 +101,7 @@ VAR
 
     { Helpers for constructing DisplayLine values (where else to put them?) }
     { Compute a string representation of an unsigned 32-bit integer }
-    PROCEDURE UintToStr(value: Integer; uint_str: Str10);
+    PROCEDURE UintToStr(value: Longint; VAR uint_str: Str10);
 
 IMPLEMENTATION
 
@@ -130,7 +130,7 @@ IMPLEMENTATION
         END;
     END;
 
-    PROCEDURE UintToStr{value: Integer; uint_str: Str10};
+    PROCEDURE UintToStr{value: Longint; VAR uint_str: Str10};
     VAR
         startaddr:  Longint;
         endaddr:    Longint;

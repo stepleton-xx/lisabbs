@@ -6,8 +6,8 @@ UNIT XferData;
 INTERFACE
 
 USES
-    {$U SysCall.Obj}       SysCall;
-    {$U Xfer/LibAsm.Obj}   XferAsm,
+    {$U SysCall.Obj}       SysCall,
+    {$U Xfer/LibAsm.Obj}   XferAsm;
 
 CONST
     kSoh = 1;   { YModem packet has 128 bytes of data. }
@@ -194,7 +194,7 @@ IMPLEMENTATION
     { Public routine, documented above }
     FUNCTION YmEmptyFileHdrPacket{(VAR data: YModemBuffer): Integer};
     VAR
-	addr:  Longint;
+        addr:  Longint;
     BEGIN
         addr := MemSet(data, 0, 3, 128);  { Zero all bytes in the packet. }
         { This packet's sequence number is always 0. }

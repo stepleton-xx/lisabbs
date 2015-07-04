@@ -190,7 +190,7 @@ IMPLEMENTATION
             { Filesize (in bytes):
                 512 (tar header) + 512 (filesystem metadata) +
                 512 (tar header) + 512 (file label data) +
-                512 (tar header) + N
+                512 (tar header) + N +
                 1024 (tar "footer" of all zeroes)
               where N is the size of the file itself, rounded up to the nearest
               larger multiple of 512 }
@@ -254,7 +254,7 @@ IMPLEMENTATION
 
         WHILE actual >= 512 DO BEGIN            { Remainder of file }
             { Zero out packet payload }
-            MemSet(buffer, 0, 3 + 1024, 1024);
+            unused := MemSet(buffer, 0, 3, 1024);
 
             { Read first 512-byte chunk into the packet }
             Read_Data(
@@ -280,11 +280,11 @@ IMPLEMENTATION
 
         { Send a zeroes packet, which is either the complete TAR file footer
           or its last 512 bytes; note correct handling of progress tally }
-        MemSet(buffer, 0, 3 + 1024, 1024);
+        unused := MemSet(buffer, 0, 3, 1024);
         seq = YmFinishPacket(buffer, seq, true {big!});
         IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Exit(YmTxFile);
-	progrezz := progrezz + 512;
-        IF progrezz mod 1024 > 0 THEN progrezz := progrezz + 512;
+        progrezz := progrezz + 512;
+        IF progrezz MOD 1024 > 0 THEN progrezz := progrezz + 512;
         ProgressCallback(errphase, progrezz, size, oopses);
 
 
