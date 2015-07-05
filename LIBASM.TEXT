@@ -5,11 +5,14 @@ INTERFACE
 TYPE
     Byte = -128..127;
 
-{ PROCEDURES AND FUNCTIONS }
-
     { 1029 bytes: 3 YModem header bytes, 1024 data bytes, 2 CRC bytes. }
     YModemBuffer = ARRAY [0..1029] OF Byte;
 
+    StrLimit = 0..255;
+
+    Str255 = String[255];
+
+{ PROCEDURES AND FUNCTIONS }
 
     { Like Unix memset(): set count bytes starting at data + offset to value.
       Returns the address one byte past the last written byte. }
@@ -22,6 +25,10 @@ TYPE
     FUNCTION MemCpy(src: Longint;
                     VAR dest: YModemBuffer;
                     offset, count: Integer): Longint;
+
+    { Append string at src to string at dest.
+      String at dest will not be extended longer than limit. }
+    PROCEDURE StrApnd(limit: StrLimit; dest: Longint; src: Str255);
 
     { Calculate 16-bit CRC of count bytes starting at data + offset. }
     FUNCTION CalcCrc(data: YModemBuffer; offset, count: Integer): Integer;
@@ -75,11 +82,21 @@ TYPE
       1/1/1970. }
     FUNCTION ToEpoch(time: Longint): Longint;
 
+    { Finally, when all else fails... }
+
+    { Classic PEEK and POKE commands for reading and writing bytes at arbitrary
+      memory locations. The result of Peek is an integer in 0..255; only the LSB
+      of value is significant to Poke. }
+    FUNCTION Peek(addr: Longint): Integer;
+    PROCEDURE Poke(addr: Longint; value: Integer);
+
 IMPLEMENTATION
 
     FUNCTION MemSet; EXTERNAL;
 
     FUNCTION MemCpy; EXTERNAL;
+
+    PROCEDURE StrApnd; EXTERNAL;
 
     FUNCTION CalcCrc; EXTERNAL;
 

@@ -52,6 +52,43 @@ done    MOVE.L  A1,(A7)         ; Place next location on stack.
 .ASCII  'MEMCPY  '              ; Function name for the debugger.
 
 
+; PROCEDURE StrApnd(limit: StrLimit; dest: Longint; src: Str255);
+; Note "abuse" of call-by-name for src parameter.
+
+.PROC   StrApnd
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.L  #0,D0           ; Clear max length of destination string (long).
+        MOVE.W  (A7)+,D0        ; Copy max length of destination string (word).
+        MOVE.L  (A7)+,A1        ; Copy destination string start address.
+        MOVE.L  A2,D2           ; Save scratch register A2.
+        MOVE.L  (A7)+,A2        ; Copy source string start address.
+
+        MOVE.L  #0,D1           ; Clear scratch space for length calculations.
+        MOVE.B  (A1),D1         ; Put destination length in scratch space.
+        SUB.W   D1,D0           ; D0 becomes free chars left in dest. string.
+        BLE     done            ; Short-circuit abort if no more chars are left.
+
+        MOVE.B  (A2)+,D1        ; Put source length in scratch space. Note incr.
+        TST.W   D1              ; Is source length 0?
+        BEQ     done            ; Short-circuit abort if so.
+        CMP.W   D0,D1           ; Is source length greater than free chars?
+        BHI     copy            ; If so, we can only copy free chars chars (D0).
+        MOVE.W  D1,D0           ; If not, we can only copy source length chars.
+        
+copy    MOVE.B  (A1),D1         ; Copy original dest. length back to scratch.
+        ADD.B   D0,(A1)+        ; Add copy count to dest. length. Note incr.
+        ADD.L   D1,A1           ; Move dest. pointer to end of dest.
+        SUB.W   #1,D0           ;   Prepare copy count to be a loop counter.
+@1      MOVE.B  (A2)+,(A1)+     ;   Copy byte; increment both addresses.
+        DBRA    D0,@1           ;   Next iteration of loop.
+
+done    MOVE.L  D2,A2           ; Restore scratch register A2.
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'STRAPND '              ; Function name for the debugger.
+
+
 ; FUNCTION CalcCrc(data: YModemBuffer; offset, count: Integer): Integer;
 ; EASy68K checked.
 
@@ -384,7 +421,7 @@ pow10   .LONG   1               ; Lookup table of powers of 10, starting from
         MOVE.L  A1,(A7)         ; Place next location on stack.
         JMP     (A0)            ; Return to caller.
 
-.ASCII  'WriteSpc'              ; Function name for the debugger.
+.ASCII  'WRITESPC'              ; Function name for the debugger.
 
 
 ; PROCEDURE TarCsum(address: Longint);
@@ -418,7 +455,7 @@ pow10   .LONG   1               ; Lookup table of powers of 10, starting from
 
         JMP     (A0)            ; Return to caller.
 
-.ASCII  'TarCsum '              ; Procedure name for the debugger.
+.ASCII  'TARCSUM '              ; Procedure name for the debugger.
 
 
 ; FUNCTION ToEpoch(time: Longint): Longint;
@@ -432,7 +469,36 @@ pow10   .LONG   1               ; Lookup table of powers of 10, starting from
         MOVE.L  D0,(A7)         ; Place result on stack.
         JMP     (A0)            ; Return to caller.
 
-.ASCII  'ToEpoch '              ; Function name for the debugger.
+.ASCII  'TOEPOCH '              ; Function name for the debugger.
+
+
+; FUNCTION Peek(addr: Longint): Integer;
+
+.FUNC   Peek
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.L  (A7)+,A1        ; Address to peek into.
+
+        MOVE.W  #0,D0           ; Clear D0.
+        MOVE.B  (A1),D0         ; Retrieve byte at address into LSB.
+        MOVE.W  DO,(A7)         ; Copy D0 onto stack as a word.
+        
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'PEEK    '              ; Function name for the debugger.
+
+
+; PROCEDURE Poke(addr: Longint; value: Integer);
+
+.PROC   Poke
+
+        MOVE.L  (A7)+,A0        ; Save return address.
+        MOVE.W  (A7)+,D0        ; Value to store as a word.
+        MOVE.L  (A7)+,A1        ; Destination address.
+        MOVE.B  D0,(A1)         ; Copy value LSB to destination.
+        JMP     (A0)            ; Return to caller.
+
+.ASCII  'POKE    '              ; Function name for the debugger.
 
 
 .END

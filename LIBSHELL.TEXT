@@ -70,11 +70,11 @@ IMPLEMENTATION
         FOR i := 1 TO state.d_size DO BEGIN
             dline := ' @)  ';
             dline[2] := Chr(64 + i);  { '@' + i; i = 1 gives us 'A' }
-            Insert(state.d_entry[i], dline, Length(dline) + 1);
+            StrApnd(80, Ord4(@dline), state.d_entry[i]);
 
             IF (20 * state.d_page + i) IN state.tagged THEN BEGIN
                 dline[5] := '>';
-                Insert('<', dline, Length(dline) + 1);
+                StrApnd(80, Ord4(@dline), '<');
             END;
 
             UiPutLine(1 + i, dline);
@@ -119,8 +119,8 @@ IMPLEMENTATION
                 IF errno <> 0 THEN BEGIN
                     UiPutError(errno, 'reading directory stream');
                     UintToStr(errno, errno_str);
-                    state.d_entry[i] := Concat(
-                        '-- Error ', errno_str, ' reading dir! --');
+                    state.d_entry[i] := Concat(  { Won't exceed 32 chars }
+                        '- Error ', errno_str, ' reading dir -');
                 END;
                 state.d_size := state.d_size + 1;
             END;
@@ -191,18 +191,20 @@ IMPLEMENTATION
             IF errno <> 0 THEN Exit(DevInfoStr);
 
             dline := '  ';
-            Insert(Concat(path, ', ', stat.name, ', ', stat.dir_path, ', '),
-                   dline, Length(dline) + 1);
-            IF stat.mounted THEN         Insert('mounted, ',
-                                                dline, Length(dline) + 1);
-            IF stat.blockstructured THEN Insert('blockstructured, ',
-                                                dline, Length(dline) + 1);
+            StrApnd(80, Ord4(@dline), path);
+            StrApnd(80, Ord4(@dline), ', ');
+            StrApnd(80, Ord4(@dline), stat.name);
+            StrApnd(80, Ord4(@dline), ', ');
+            StrApnd(80, Ord4(@dline), stat.dir_path);
+            StrApnd(80, Ord4(@dline), ', ');
+            IF stat.mounted THEN         StrApnd(80, Ord4(@dline), 'mounted, ');
+            IF stat.blockstructured THEN StrApnd(80, Ord4(@dline), 'block, ');
             CASE stat.devt OF
-                diskdev:    Insert('diskdev',  dline, Length(dline) + 1);
-                pascalbd:   Insert('pascalbd', dline, Length(dline) + 1);
-                seqdev:     Insert('seqdev',   dline, Length(dline) + 1);
-                bitbkt:     Insert('bitbkt',   dline, Length(dline) + 1);
-                non_io:     Insert('non_io',   dline, Length(dline) + 1);
+                diskdev:    StrApnd(80, Ord4(@dline), 'diskdev');
+                pascalbd:   StrApnd(80, Ord4(@dline), 'pascalbd');
+                seqdev:     StrApnd(80, Ord4(@dline), 'seqdev');
+                bitbkt:     StrApnd(80, Ord4(@dline), 'bitbkt');
+                non_io:     StrApnd(80, Ord4(@dline), 'non_io');
             END;
         END;
     BEGIN
@@ -296,8 +298,9 @@ IMPLEMENTATION
             state.n_tags := 0;
         END ELSE BEGIN
             IF Length(path) <= 18 THEN BEGIN
-                dline := Concat('Failed to set current directory to "', path,
-                                '"; press SPACE to continue');
+                dline := 'Failed to set current directory to "';
+                StrApnd(80, Ord4(@dline), path);
+                StrApnd(80, Ord4(@dline), '"; press SPACE to continue');
             END ELSE BEGIN
                 dline :=
                     'Failed to set current directory; press SPACE to continue';
@@ -325,7 +328,7 @@ IMPLEMENTATION
 
         dline := 'Type A-@';
         dline[Length(dline)] := Chr(64 + state.d_size);
-        Insert(' to tag/untag, or SPACE to exit', dline, Length(dline) + 1);
+        StrApnd(80, Ord4(@dline), ' to tag/untag, or SPACE to exit');
         UiPutLine(23, dline);
 
         WHILE true DO BEGIN
@@ -418,8 +421,13 @@ IMPLEMENTATION
         UintToStr(bytes_total, btotal_str);
         YmPhaseName(phase, phase_str);
         UintToStr(errors, errors_str);
-        info := Concat(bsent_str, '/', btotal_str, ', errs: ',
-                       errors_str, '. ', phase_str);
+        info := bsent_str,
+        StrApnd(50, Ord4(@info), '/');
+        StrApnd(50, Ord4(@info), btotal_str);
+        StrApnd(50, Ord4(@info), ', errs: ');
+        StrApnd(50, Ord4(@info), errors_str);
+        StrApnd(50, Ord4(@info), '. ');
+        StrApnd(50, Ord4(@info), phase_str);
         progress := 999 * bytes_total div bytes_sent;
         UiPutProgress(progress, info);
     END;
@@ -441,6 +449,7 @@ IMPLEMENTATION
         last_file:     Boolean;
         errphase:      YmTxPhase;
         errno:         Integer;
+        errline:       DisplayLine;
     BEGIN
         files_sent := 0;  { No files sent so far }
         SendFiles  := files_sent;
@@ -483,7 +492,9 @@ IMPLEMENTATION
             YmTxFile(to_send, UiGetFd, last_file, UiProgressCallback,
                      errphase, errno);
             IF errno <> 0 THEN BEGIN
-                UiPutError(errno, Concat('while sending ', to_send));
+                errline := 'while sending ';
+                StrApnd(80, Ord4(@errline), to_send);
+                UiPutError(errno, errline);
                 GOTO 2222;
             END;
             files_sent := files_sent + 1;
@@ -501,6 +512,7 @@ IMPLEMENTATION
         files_sent:  Integer;
         sent_str:    Str10;
         tagged_str:  Str10;
+        errline:       DisplayLine;
     BEGIN
         UiPutStatus( 'Sending tagged files');
         UiPutLine(0, 'Sending tagged files');
@@ -517,13 +529,22 @@ IMPLEMENTATION
 
         { If we sent a different amount that we expected, all we can do is
           complain about it }
-        IF files_sent <> state.n_tags THEN
-            UiPutError(0, Concat('Expected to send ', tagged_str,
-                                 ' files, but sent ', sent_str, ' instead'));
-
-        UintToStr(files_sent, sent_str);
-        UiPutLine(23, Concat('Sent ', sent_str, ' of ', tagged_str,
-                             ' files; press SPACE to continue'));
+        IF files_sent <> state.n_tags THEN BEGIN
+            errline := 'Expected to send ';
+            StrApnd(80, Ord4(@errline), tagged_str);
+            StrApnd(80, Ord4(@errline), ' files, but sent ');
+            StrApnd(80, Ord4(@errline), sent_str);
+            StrApnd(80, Ord4(@errline), ' instead');
+            UiPutError(0, errline);
+        END ELSE BEGIN
+            UintToStr(files_sent, sent_str);
+            errline := 'Sent ';  { Not really an error... }
+            StrApnd(80, Ord4(@errline), sent_str);
+            StrApnd(80, Ord4(@errline), ' of ');
+            StrApnd(80, Ord4(@errline), tagged_str);
+            StrApnd(80, Ord4(@errline), ' files; press SPACE to continue');
+            UiPutLine(23, errline);
+        END;
         WHILE UiGetChar <> ' ' DO BEGIN END;
     END;
 
@@ -532,14 +553,24 @@ IMPLEMENTATION
     VAR
         files_sent:  Integer;
         sent_str:    Str10;
+        errline:     DisplayLine;
     BEGIN
         UiPutStatus( 'Sending all files in current directory');
         UiPutLine(0, 'Sending all files in current directory');
 
+        IF state.d_page = 1 AND state.d_size = 0 THEN BEGIN
+            UiPutLine(23, 'No files here to send; press SPACE to continue');
+            WHILE UiGetChar <> ' ' DO BEGIN END;
+            Exit(OpSendAll);
+        END;
+
         files_sent := SendFiles(state, NextAnyFile);
 
-        UiPutLine(23, Concat('Sent ', sent_str,
-                             ' files; press SPACE to continue'));
+        UintToStr(files_sent, sent_str);
+        errline := 'Sent ';  { Not really an error... }
+        StrApnd(80, Ord4(@errline), sent_str);
+        StrApnd(80, Ord4(@errline), ' files; press SPACE to continue');
+        UiPutLine(23, errline);
         WHILE UiGetChar <> ' ' DO BEGIN END;
     END;
 
@@ -628,12 +659,12 @@ IMPLEMENTATION
             CheckWarn(errno, 'getting current working dir');
             dline := 'Page ';
             UintToStr(state.d_page, uint_str);
-            Insert(uint_str,  dline, Length(dline) + 1);
-            Insert(' of ',    dline, Length(dline) + 1);
-            Insert(cwd,       dline, Length(dline) + 1);
+            StrApnd(80, Ord4(@dline), uint_str);
+            StrApnd(80, Ord4(@dline), ' of ');
+            StrApnd(80, Ord4(@dline), cwd);
             UintToStr(state.n_tags, uint_str);
-            Insert(uint_str,  dline, Length(dline) + 1);
-            Insert(' tagged', dline, Length(dline) + 1);
+            StrApnd(80, Ord4(@dline), uint_str);
+            StrApnd(80, Ord4(@dline), ' tagged');
             UiPutLine(23, dline);
 
             { User action selection }

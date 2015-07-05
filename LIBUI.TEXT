@@ -38,7 +38,6 @@ TYPE
     InputLength = 0..255;
 
     { Strings of various lengths }
-    Str255 = String[255];
     Str50  = String[50];
     Str20  = String[20];
     Str10  = String[10]
@@ -149,8 +148,8 @@ IMPLEMENTATION
         old_len:  Integer;
     BEGIN
         old_len := Length(port_buf);
-        Insert('e[', port_buf, Length(port_buf) + 1);
-        Insert(code, port_buf, Length(port_buf) + 1);
+        StrApnd(120, Ord4(@port_buf), 'e[');
+        StrApnd(120, Ord4(@port_buf), code);
         port_buf[old_len + 1] := Chr(27);  { Replace 'e' with ESC }
     END;
 
@@ -162,7 +161,10 @@ IMPLEMENTATION
     BEGIN
         UintToStr(Ord(row) + 1, row_str);
         UintToStr(Ord(col) + 1, col_str);
-        goto_code := Concat(row_str, ';', col_str, 'H');
+        goto_code := row_str;
+        StrApnd(10, Ord4(@goto_code), ';');
+        StrApnd(10, Ord4(@goto_code), col_str);
+        StrApnd(10, Ord4(@goto_code), 'H');
     END;
 
     FUNCTION UiGetPort{: Port};
@@ -202,7 +204,7 @@ IMPLEMENTATION
         Vt100GoToXY(0, row, goto_code);
         AppendEscapeCode(goto_code);  { Move to selected row }
         AppendEscapeCode('2K');       { Clear line }
-        Insert(line_text, port_buf, Length(port_buf) + 1);
+        StrApnd(120, Ord4(@port_buf), line_text);
         SendPortBuf;
     END;
 
@@ -286,7 +288,7 @@ IMPLEMENTATION
                     count := count + 1;
                 END;
             END ELSE IF count > 0 THEN BEGIN  { ...unless we're at max length }
-                Insert(one_ch, typed, Length(typed) + 1);
+                StrApnd(255, Ord4(@typed), one_ch);
                 UiPutChar(one_ch[1]);  { echo back to user }
                 count := count - 1;
             END;
@@ -339,7 +341,7 @@ IMPLEMENTATION
                                  ELSE GOTO 1111;
         END; 1111:
 
-        Insert(info, dline, Length(dline) + 1);
+        StrApnd(80, Ord4(@dline), info);
         Write(output, dline);
     END;
 
