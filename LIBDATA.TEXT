@@ -14,6 +14,7 @@ CONST
     kStx = 2;   { YModem packet has 1024 bytes of data. }
     kEot = 4;   { YModem end of file symbol. }
     kAck = 6;   { Packet successfully received. }
+    kCan = 24;  { Cancel transmission. }
     kEof = 32;  { CP/M EOF marker. }
     kCee = 67;  { Capital C (initiate transfer). }
 
@@ -25,7 +26,7 @@ CONST
           data: YModem packet in memory.
 
       Returns the starting address for payload data in a YModem packet. }
-    FUNCTION YmDataAddr(data: YModemBuffer): Longint;
+    FUNCTION YmDataAddr(VAR data: YModemBuffer): Longint;
 
     { Set header and CRC for a YModem packet containing arbitrary data.
 
@@ -123,7 +124,7 @@ IMPLEMENTATION
     (*******************)
 
     { Public routine, documented above }
-    FUNCTION YmDataAddr{(data: YModemBuffer): Longint};
+    FUNCTION YmDataAddr{(VAR data: YModemBuffer): Longint};
     BEGIN
         YmDataAddr := Ord4(@data) + 3;
     END;
