@@ -2,15 +2,14 @@
 { "Owns" the screen and serial port }
 { Assumes remote user has a VT-100 compatible display }
 { 80 cols, 24 rows used for UI; further rows on Lisa used for status info }
-{ 24: blank }
+{ 24: File transfer progress info }
 { 25: blank }
-{ 26: blank }
-{ 26: File transfer progress info }
-{ 27: blank }
+{ 26: Serial TX/RX errors }
+{ 27: Serial TX/RX errors }
 { 28: Serial TX/RX errors }
-{ 29: blank }
-{ 30: BBS status line }
-{ 31: blank }
+{ 29: Serial TX/RX errors }
+{ 30: blank }
+{ 31: BBS status line }
 UNIT XferUi;
 
 INTERFACE
@@ -22,9 +21,12 @@ USES
     {$U Xfer/LibPort.Obj}   XferPort;
 
 CONST
-    kRowXferProgress = 26;
-    kRowIoErrors     = 28;
-    kRowStatus       = 30;
+    kRowXferProgress = 24;
+    kRowIoErrors     = 26;  { First line of four }
+    kRowStatus       = 31;
+
+    { Internal: size of error display circular buffer minus 1 }
+    kErrBufIndexMax  = 3;
 
 TYPE
     { A string type for text to show on port and console displays }
@@ -42,6 +44,9 @@ TYPE
     Str20  = String[20];
     Str10  = String[10];
 
+    { Internal type: circular error buffer index }
+    ErrBufIndex = 0..kErrBufIndexMax;
+
 VAR
     { Serial port handles }
     ui_p:        Port;
@@ -50,8 +55,9 @@ VAR
     { Input file for echo-less keyboard input }
     kinput:      Text;
 
-    { Output file for error messages to alternate console }
-    stderr:      Text;
+    { Circular buffer of errors, and index of the next error slot }
+    errors:      ARRAY [ErrBufIndex] OF DisplayLine;
+    next_err:    ErrBufIndex;
 
     { A buffer for assembling text and escape codes for a line of port output }
     port_buf:    String[120];
@@ -110,22 +116,33 @@ IMPLEMENTATION
         ui_p := p;
         ui_fd := fd;
         Reset(kinput, '-KEYBOARD');
-        Reset(stderr, '-ALTCONSOLE');
+
+        errors[0] := '';
+        errors[1] := '';
+        errors[2] := '';
+        errors[3] := '';
+        next_err  := 0;
     END;
 
     { Helper: write the current contents of port_buf to the serial port }
     PROCEDURE SendPortBuf;
     VAR
-        actual:  Longint;
-        errno:   Integer;
+        actual:    Longint;
+        errno:     Integer;
+        uint_str:  Str10;
+        err_str:   DisplayLine;
     BEGIN
         TimedWrite(ui_p, ui_fd, Ord4(@port_buf) + 1, Length(port_buf),
                    actual, 10, errno);  { Ten second timeout }
              IF errno <> 0 THEN UiPutError(errno, '')
         ELSE IF actual <> Length(port_buf) THEN BEGIN
-            { Note abuse of UiPutError with subsequent Write call }
-            UiPutError(0, 'wrote ');
-            Write(output, actual, ' bytes instead of ', Length(port_buf), '.');
+            err_str := 'wrote ';
+            UintToStr(actual, uint_str);
+            StrApnd(80, Ord4(@err_str), uint_str);
+            StrApnd(80, Ord4(@err_str), ' bytes instead of ');
+            UintToStr(Length(port_buf), uint_str);
+            StrApnd(80, Ord4(@err_str), uint_str);
+            UiPutError(0, err_str);
         END;
     END;
 
@@ -303,20 +320,33 @@ IMPLEMENTATION
     END;
 
     PROCEDURE UiPutError{errno: Integer; message: DisplayLine};
+    VAR
+        errno_str:  Str10;
+        i:          Integer;
     BEGIN
-        GoToXY(0, kRowIoErrors);
-        ScreenCtr(CclearELine);
+        { Update error array }
+        IF (next_err MOD 2 = 1) THEN errors[next_err] := 'ERROR'
+                                ELSE errors[next_err] := 'Error';
+        IF errno <> 0 THEN BEGIN
+            StrApnd(80, Ord4(@errors[next_err]), ' ');
+            UintToStr(errno, errno_str);
+            StrApnd(80, Ord4(@errors[next_err]), errno_str);
+        END;
+        IF message <> '' THEN BEGIN
+            StrApnd(80, Ord4(@errors[next_err]), ': ');
+            StrApnd(80, Ord4(@errors[next_err]), message);
+        END;
 
-        IF (errno = 0) AND (message = '') THEN Exit(UiPutError);  { Clear only }
+        { Update next error index }
+        IF next_err = kErrBufIndexMax THEN next_err := 0
+                                      ELSE next_err := next_err + 1;
 
-        { Error output to the screen }
-        IF errno = 0 THEN Write(output, 'Error')
-                     ELSE Write(output, 'Error ', errno);
-        IF message <> '' THEN Write(output, ': ', message);
-
-        { Error output to the alternate console }
-        IF errno = 0 THEN WriteLn(stderr, 'Error: ', message)
-                     ELSE WriteLn(stderr, 'Error ', errno, ': ', message);
+        { Display errors }
+        FOR i := 0 TO kErrBufIndexMax DO BEGIN
+            GoToXY(0, kRowIoErrors + i);
+            ScreenCtr(CclearELine);
+            Write(output, errors[(i + next_err) MOD (kErrBufIndexMax + 1)]);
+        END;
     END;
 
     PROCEDURE UiPutProgress{progress: Integer; info: Str50};
