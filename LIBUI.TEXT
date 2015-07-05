@@ -40,7 +40,7 @@ TYPE
     { Strings of various lengths }
     Str50  = String[50];
     Str20  = String[20];
-    Str10  = String[10]
+    Str10  = String[10];
 
 VAR
     { Serial port handles }

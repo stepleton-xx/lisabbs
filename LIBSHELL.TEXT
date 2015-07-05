@@ -421,7 +421,7 @@ IMPLEMENTATION
         UintToStr(bytes_total, btotal_str);
         YmPhaseName(phase, phase_str);
         UintToStr(errors, errors_str);
-        info := bsent_str,
+        info := bsent_str;
         StrApnd(50, Ord4(@info), '/');
         StrApnd(50, Ord4(@info), btotal_str);
         StrApnd(50, Ord4(@info), ', errs: ');
@@ -558,7 +558,7 @@ IMPLEMENTATION
         UiPutStatus( 'Sending all files in current directory');
         UiPutLine(0, 'Sending all files in current directory');
 
-        IF state.d_page = 1 AND state.d_size = 0 THEN BEGIN
+        IF (state.d_page = 1) AND (state.d_size = 0) THEN BEGIN
             UiPutLine(23, 'No files here to send; press SPACE to continue');
             WHILE UiGetChar <> ' ' DO BEGIN END;
             Exit(OpSendAll);

@@ -1,3 +1,58 @@
+(* To compile on Workshop 1.0: at command line, type R<XFER/LisaBBS()i
+$EXEC
+A{ssemble}Xfer/LibAsm.Asm{---------------}
+{ No listing }
+Xfer/LibAsm.Asm
+P{ascal}Xfer/LibAsm{---------------------}
+{ No listing }
+Xfer/LibAsm
+G{enerate}Xfer/LibAsm
+Xfer/LibAsm
+P{ascal}Xfer/LibPort{--------------------}
+{ No listing }
+Xfer/LibPort
+G{enerate}Xfer/LibPort
+Xfer/LibPort
+P{ascal}Xfer/LibData{--------------------}
+{ No listing }
+Xfer/LibData
+G{enerate}Xfer/LibData
+Xfer/LibData
+P{ascal}Xfer/LibXfer{--------------------}
+{ No listing }
+Xfer/LibXfer
+G{enerate}Xfer/LibXfer
+Xfer/LibXfer
+P{ascal}Xfer/LibUi{----------------------}
+{ No listing }
+Xfer/LibUi
+G{enerate}Xfer/LibUi
+Xfer/LibUi
+P{ascal}Xfer/LibShell{-------------------}
+{ No listing }
+Xfer/LibShell
+G{enerate}Xfer/LibShell
+Xfer/LibShell
+P{ascal}Xfer/LisaBBS{--------------------}
+{ No listing }
+Xfer/LisaBBS
+G{enerate}Xfer/LisaBBS
+Xfer/LisaBBS
+L{ink}IOSPASLIB{-------------------------}
+Xfer/LibAsm.Asm
+Xfer/LibAsm
+Xfer/LibPort
+Xfer/LibData
+Xfer/LibXfer
+Xfer/LibUi
+Xfer/LibShell
+Xfer/LisaBBS
+{ No more input files }
+{ No listing }
+Xfer/LisaBBS_exe
+$ENDEXEC
+*)
+
 { "LisaBBS": a utilty for downloading Lisa files using YModem }
 PROGRAM LisaBBS;
 
@@ -6,8 +61,8 @@ USES
     {$U PasLibCall.Obj}      PasLibCall,
     {$U Xfer/LibAsm.Obj}     XferAsm,
     {$U Xfer/LibPort.Obj}    XferPort,
-    {$U Xfer/LibUi.Obj}      XferUi;
-    {$U Xfer/LibShell.Obj}   XferShell,
+    {$U Xfer/LibUi.Obj}      XferUi,
+    {$U Xfer/LibShell.Obj}   XferShell;
 
 VAR
     p:         Port;
