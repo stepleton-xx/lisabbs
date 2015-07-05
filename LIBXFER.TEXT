@@ -50,7 +50,8 @@ TYPE
          errphase: transfer phase where fatal error was encountered, if any
             errno: OS error number of the fatal error, if any; 0 otherwise }
     { -1 errno indicates an internal error
-      -2 errno indicates timeout }
+      -2 errno indicates timeout
+      -3 errno indicates remote-initiated cancel }
     PROCEDURE YmTxFile(name: PathName; port_fd: Integer; final: Boolean;
                        { Callback for local display of transfer progress }
                        { Args - phase: current transfer phase
@@ -107,6 +108,7 @@ IMPLEMENTATION
     END;
 
     { Helper for YmTxFile: send a packet and await ACK }
+    { -3 errno indicates remote-initiated cancel }
     FUNCTION YmRoundTrip(port_fd:    Integer;
                          data:       YModemBuffer;
                          VAR oopses: Integer;
@@ -117,9 +119,11 @@ IMPLEMENTATION
         size:       Integer;
         i:          Integer;
         actual:     Longint;
-        unused:     Byte;
+        response:   Byte;
+        num_cans:   Integer;
     BEGIN
         YmRoundTrip := false;  { Assume failure by default }
+        num_cans := 0;  { No CANcel commands received so far }
 
         is_serial := RefnumToPort(port_fd, p, errno);
         IF errno <> 0 THEN Exit(YmRoundTrip);
@@ -154,11 +158,21 @@ IMPLEMENTATION
                 Exit(YmRoundTrip);
             END;
 
-            { Attempt to receive an ACK; if received, return successfully }
-            IF PolledAwait(port_fd, [kAck], unused, actual,
+            { Attempt to receive a response character we recognize }
+            IF PolledAwait(port_fd, [kAck, kCan], response, actual,
                            10000, 100, errno) THEN BEGIN
-                YmRoundTrip := true;
-                Exit(YmRoundTrip);
+                { If an ACK, then the packet was sent successfully }
+                IF response = kAck THEN BEGIN
+                    YmRoundTrip := true;
+                    Exit(YmRoundTrip);
+                END;
+                { Otherwise, it was a CAN; two CANs mean quit }
+                num_cans := num_cans + 1;
+                IF num_cans >= 2 THEN BEGIN
+                    oopses := oopses + 1;
+                    errno := -3;
+                    Exit(YmRoundTrip);
+                END;
             END;
         END;
 
@@ -241,8 +255,8 @@ IMPLEMENTATION
 
         DataHdrPacket(buffer, stat);            { Beginning of file }
         unused := MemSet(buffer, 0, 3 + 512, 512);
-        Read_Data(
-            errno, file_fd, Ord4(@buffer) + 512, 512, actual, Sequential, 0);
+        Read_Data(errno, file_fd, YmDataAddr(buffer) + 512, 512, actual,
+                  Sequential, 0);
         IF errno <> 0 THEN Exit(YmTxFile);
         seq := YmFinishPacket(buffer, seq, true {big!});
         IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Exit(YmTxFile);
