@@ -51,7 +51,8 @@ TYPE
             errno: OS error number of the fatal error, if any; 0 otherwise }
     { -1 errno indicates an internal error
       -2 errno indicates timeout
-      -3 errno indicates remote-initiated cancel }
+      -3 errno indicates remote-initiated cancel
+      -4 errno indicates an anomalous read that didn't bother the OS }
     PROCEDURE YmTxFile(name: PathName; port_fd: Integer; final: Boolean;
                        { Callback for local display of transfer progress }
                        { Args - phase: current transfer phase
@@ -179,6 +180,39 @@ IMPLEMENTATION
         { Return in failure }
     END;
 
+    { Helper for YmTxFile: read (up to) 512 bytes of a file into a buffer }
+    { Notes; will not attempt to read beyond the file's LEOF }
+    { Args - file_fd: reference number of the file to read
+                addr: address of buffer receiving data
+                stat: Fs_Info record for file referred to by fd
+               total: File bytes read so far; will be incremented
+               errno: OS error number of any fatal error, if any; 0 otherwise }
+    { -4 errno indicates an anomalous read that didn't bother the OS }
+    PROCEDURE NextChunk(file_fd:    Integer;
+                        addr:       Longint;
+                        VAR stat:   Fs_Info;
+                        VAR total:  Longint;
+                        VAR errno:  Integer);
+    VAR
+        target: Longint;
+        actual: Longint;
+    BEGIN
+        { Assume success by default }
+        errno := 0;
+
+        { Compute how much to read for this chunk }
+        target := stat.size - total;
+        IF target <=   0 THEN Exit(NextChunk);  { If nothing, exit }
+        IF target >  512 THEN target := 512;    { Cap at 512 bytes }
+
+        { Read data; set errno on anomalously-sized read }
+        Read_Data(errno, file_fd, addr, target, actual, Sequential, 0);
+        IF (target <> actual) AND (errno = 0) THEN errno := -4;
+
+        { Update total }
+        total := total + actual;
+    END;
+
     PROCEDURE YmTxFile{name: PathName; port_fd: Integer; final: Boolean;
                        PROCEDURE ProgressCallback(phase:       YmTxPhase;
                                                   bytes_sent:  Longint;
@@ -186,15 +220,15 @@ IMPLEMENTATION
                                                   errors:      Integer);
                        VAR errphase: YmTxPhase; VAR errno: Integer};
     VAR
-        oopses:    Integer;
-        progrezz:  Longint;  { 8 char symbol length limit }
-        file_fd:   Integer;
-        stat:      Fs_Info;
-        size:      Longint;
-        buffer:    YModemBuffer;
-        seq:       Integer;
-        actual:    Longint;
-        unused:    Longint;
+        oopses:      Integer;
+        progrezz:    Longint;  { 8 char symbol length limit }
+        file_fd:     Integer;
+        stat:        Fs_Info;
+        size:        Longint;  { TAR file size }
+        buffer:      YModemBuffer;
+        seq:         Integer;
+        unused:      Longint;
+        bytes_read:  Longint;
 
         { Helper: compute size of the tar file we send over the wire }
         FUNCTION TarFileSize(stat: Fs_Info): Longint;
@@ -213,90 +247,103 @@ IMPLEMENTATION
             TarFileSize := size;
         END;
 
+        { Helper: close the file (if open) before exiting }
+        PROCEDURE Bail(fd: Integer);
+        VAR
+            unused: Integer;
+        BEGIN
+            IF fd <> -1 THEN Close_Object(unused, fd);
+            Exit(YmTxFile);
+        END;
+
     BEGIN
         oopses := 0;
         progrezz := 0;
+        file_fd := -1;  { Hopefully -1 is never a valid refnum }
 
 
         errphase := kYmTxOpenFile;  { PHASE 1: File opening }
         ProgressCallback(errphase, progrezz, size, oopses);
         { Open the file to send, and stat it }
         Open(errno, name, file_fd, [Dread]);
-        IF errno <> 0 THEN Exit(YmTxFile);
+        IF errno <> 0 THEN Bail(file_fd);
         Info(errno, file_fd, stat);
-        IF errno <> 0 THEN Exit(YmTxFile);
+        IF errno <> 0 THEN Bail(file_fd);
         size := TarFileSize(stat);
 
 
         errphase := kYmTxStart;     { PHASE 2: Await transfer initiation }
         ProgressCallback(errphase, progrezz, size, oopses);
-        IF NOT YmTxStart(port_fd, oopses, errno) THEN Exit(YmTxFile);
+        IF NOT YmTxStart(port_fd, oopses, errno) THEN Bail(file_fd);
 
 
         errphase := kYmTxHeader;    { PHASE 3: Send header, await ACK + init }
         ProgressCallback(errphase, progrezz, size, oopses);
         seq := YmFileHdrPacket(buffer, stat.name, size, stat.DTM);
-        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Exit(YmTxFile);
-        IF NOT YmTxStart(port_fd, oopses, errno) THEN Exit(YmTxFile);
+        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Bail(file_fd);
+        IF NOT YmTxStart(port_fd, oopses, errno) THEN Bail(file_fd);
 
 
         errphase := kYmTxFileData;  { PHASE 4: Send file data, await ACKs }
         ProgressCallback(errphase, progrezz, size, oopses);
 
         seq := InfoPacket(buffer, stat, seq);   { Filesystem metadata }
-        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Exit(YmTxFile);
+        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Bail(file_fd);
         progrezz := progrezz + 1024;
         ProgressCallback(errphase, progrezz, size, oopses);
 
         seq := LabelPacket(buffer, stat, seq);  { File label data }
-        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Exit(YmTxFile);
+        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Bail(file_fd);
         progrezz := progrezz + 1024;
         ProgressCallback(errphase, progrezz, size, oopses);
 
-        DataHdrPacket(buffer, stat);            { Beginning of file }
+        bytes_read := 0                         { Beginning of file }
+        DataHdrPacket(buffer, stat);
         unused := MemSet(buffer, 0, 3 + 512, 512);
-        Read_Data(errno, file_fd, YmDataAddr(buffer) + 512, 512, actual,
-                  Sequential, 0);
-        IF errno <> 0 THEN Exit(YmTxFile);
+        NextChunk(file_fd, YmDataAddr(buffer) + 512, stat, bytes_read, errno);
+        IF errno <> 0 THEN Bail(file_fd);
         seq := YmFinishPacket(buffer, seq, true {big!});
-        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Exit(YmTxFile);
+        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Bail(file_fd);
         { ProgressCallback gets TAR file bytes sent so far, not raw bytes sent
           out over the wire, so special handling for a 0-byte file }
-        IF actual = 0 THEN progrezz := progrezz + 512
-                      ELSE progrezz := progrezz + 1024;
+        IF bytes_read = 0 THEN progrezz := progrezz + 512
+                          ELSE progrezz := progrezz + 1024;
         ProgressCallback(errphase, progrezz, size, oopses);
 
-        WHILE actual >= 512 DO BEGIN            { Remainder of file }
+        WHILE bytes_read < stat.size DO BEGIN   { Remainder of file }
             { Zero out packet payload }
             unused := MemSet(buffer, 0, 3, 1024);
 
             { Read first 512-byte chunk into the packet }
-            Read_Data(
-                errno, file_fd, YmDataAddr(buffer), 512, actual, Sequential, 0);
-            IF errno <> 0 THEN Exit(YmTxFile);
+            NextChunk(file_fd, YmDataAddr(buffer), stat, bytes_read, errno);
+            IF errno <> 0 THEN Bail(file_fd);
             progrezz := progrezz + 512;
 
             { If we didn't hit EOF, read the next 512-byte chunk }
-            IF actual >= 512 THEN BEGIN
-                Read_Data(errno, file_fd, YmDataAddr(buffer) + 512, 512, actual,
-                          Sequential, 0);
-                IF errno <> 0 THEN Exit(YmTxFile);
+            IF bytes_read < stat.size THEN BEGIN
+                NextChunk(
+                    file_fd, YmDataAddr(buffer) + 512, stat, bytes_read, errno);
+                IF errno <> 0 THEN Bail(file_fd);
                 progrezz := progrezz + 512;
             END;
 
             { Send this packet }
             seq := YmFinishPacket(buffer, seq, true {big!});
             IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN BEGIN
-                Exit(YmTxFile);
+                Bail(file_fd);
             END;
             ProgressCallback(errphase, progrezz, size, oopses);
         END;
+
+        { Close file }
+        Close_Object(errno, file_fd);
+        file_fd := -1;
 
         { Send a zeroes packet, which is either the complete TAR file footer
           or its last 512 bytes; note correct handling of progress tally }
         unused := MemSet(buffer, 0, 3, 1024);
         seq = YmFinishPacket(buffer, seq, true {big!});
-        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Exit(YmTxFile);
+        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Bail(file_fd);
         progrezz := progrezz + 512;
         IF progrezz MOD 1024 > 0 THEN progrezz := progrezz + 512;
         ProgressCallback(errphase, progrezz, size, oopses);
@@ -305,20 +352,20 @@ IMPLEMENTATION
         errphase := kYmTxEot;       { PHASE 5: Send EOT, await ACK }
         ProgressCallback(errphase, progrezz, size, oopses);
         buffer[0] := kEot;
-        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Exit(YmTxFile);
+        IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Bail(file_fd);
 
 
         IF final THEN BEGIN
             errphase := kYmTxRestart;   { PHASE 6: Await re-initiation }
             ProgressCallback(errphase, progrezz, size, oopses);
-            IF NOT YmTxStart(port_fd, oopses, errno) THEN Exit(YmTxFile);
+            IF NOT YmTxStart(port_fd, oopses, errno) THEN Bail(file_fd);
 
 
             errphase := kYmTxFooter;    { PHASE 7: Send empty header }
             ProgressCallback(errphase, progrezz, size, oopses);
             seq := YmEmptyFileHdrPacket(buffer);
             IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN BEGIN
-                Exit(YmTxFile);
+                Bail(file_fd);
             END;
         END;
 
