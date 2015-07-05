@@ -58,11 +58,11 @@ done    MOVE.L  A1,(A7)         ; Place next location on stack.
 .PROC   StrApnd
 
         MOVE.L  (A7)+,A0        ; Save return address.
-        MOVE.L  #0,D0           ; Clear max length of destination string (long).
-        MOVE.W  (A7)+,D0        ; Copy max length of destination string (word).
-        MOVE.L  (A7)+,A1        ; Copy destination string start address.
         MOVE.L  A2,D2           ; Save scratch register A2.
         MOVE.L  (A7)+,A2        ; Copy source string start address.
+        MOVE.L  (A7)+,A1        ; Copy destination string start address.
+        MOVE.L  #0,D0           ; Clear max length of destination string (long).
+        MOVE.W  (A7)+,D0        ; Copy max length of destination string (word).
 
         MOVE.L  #0,D1           ; Clear scratch space for length calculations.
         MOVE.B  (A1),D1         ; Put destination length in scratch space.
@@ -481,7 +481,7 @@ pow10   .LONG   1               ; Lookup table of powers of 10, starting from
 
         MOVE.W  #0,D0           ; Clear D0.
         MOVE.B  (A1),D0         ; Retrieve byte at address into LSB.
-        MOVE.W  DO,(A7)         ; Copy D0 onto stack as a word.
+        MOVE.W  D0,(A7)         ; Copy D0 onto stack as a word.
         
         JMP     (A0)            ; Return to caller.
 
