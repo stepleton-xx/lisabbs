@@ -193,8 +193,6 @@ IMPLEMENTATION
             dline := '  ';
             StrApnd(80, Ord4(@dline), path);
             StrApnd(80, Ord4(@dline), ', ');
-            StrApnd(80, Ord4(@dline), stat.name);
-            StrApnd(80, Ord4(@dline), ', ');
             StrApnd(80, Ord4(@dline), stat.dir_path);
             StrApnd(80, Ord4(@dline), ', ');
             IF stat.mounted THEN         StrApnd(80, Ord4(@dline), 'mounted, ');
@@ -428,7 +426,7 @@ IMPLEMENTATION
         StrApnd(50, Ord4(@info), errors_str);
         StrApnd(50, Ord4(@info), '. ');
         StrApnd(50, Ord4(@info), phase_str);
-        progress := 999 * bytes_total div bytes_sent;
+        progress := 999 * bytes_sent div bytes_total;
         UiPutProgress(progress, info);
     END;
 
@@ -658,10 +656,11 @@ IMPLEMENTATION
             Get_Working_Dir(errno, cwd);
             CheckWarn(errno, 'getting current working dir');
             dline := 'Page ';
-            UintToStr(state.d_page, uint_str);
+            UintToStr(state.d_page + 1, uint_str);
             StrApnd(80, Ord4(@dline), uint_str);
             StrApnd(80, Ord4(@dline), ' of ');
             StrApnd(80, Ord4(@dline), cwd);
+            StrApnd(80, Ord4(@dline), ', ');
             UintToStr(state.n_tags, uint_str);
             StrApnd(80, Ord4(@dline), uint_str);
             StrApnd(80, Ord4(@dline), ' tagged');
