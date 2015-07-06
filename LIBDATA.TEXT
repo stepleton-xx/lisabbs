@@ -219,17 +219,17 @@ IMPLEMENTATION
     PROCEDURE TarFileHdr(VAR data: YModemBuffer;
                          name, suffix: E_Name; size, mtime: Longint);
     CONST
-        kMode = '000644 ';   { -rw-r--r-- }
-        kUid = '000000 ';    { UID 0 }
-        kGid = '003677 ';    { GID 1983 (octal) }
-        kUstar = 'ustar';    { tar file signature part 1 }
-        kUname = 'root';     { root user }
-        kGroup = 'lisa';     { lisa group }
-        kSpaces = '      ';  { six spaces }
+        kMode = '0000644';     { -rw-r--r-- }
+        kUid = '0000000';      { UID 0, also used for devmajor and devminor }
+        kGid = '0003677';      { GID 1983 (octal) }
+        kUstar = 'ustar';      { tar file signature part 1 }
+        kUname = 'root';       { root user }
+        kGroup = 'lisa';       { lisa group }
+        kSpaces = '        ';  { eight spaces }
     VAR
         base:   Integer;
         addr:   Longint;
-        kstr:   String[7];
+        kstr:   String[8];
         csum:   Longint;
     BEGIN
         { Set base position of the tar header, then zero out first 512 bytes. }
@@ -254,9 +254,9 @@ IMPLEMENTATION
         addr := WriteOct(Ord4(@data) + base + 124,  size, true { zero pad });
         addr := WriteOct(Ord4(@data) + base + 136, mtime, true);
 
-        { Write blank (spaces) checksum, plus NUL, plus space. }
+        { Write blank (spaces) checksum. }
         kstr := kSpaces;
-        addr := WriteSpc(1 + MemCpy(Ord4(@kstr) + 1, data, base + 148, 6));
+        addr := MemCpy(  Ord4(@kstr) + 1, data, base + 148, 8);
 
         data[base + 156] := 48;  { ASCII '0': this is a normal file. }
 
@@ -269,12 +269,18 @@ IMPLEMENTATION
 
         { Copy user and group. }
         kstr := kUname;
-        addr := MemCpy(  Ord4(@kstr) + 1, data,          base + 265, 4);
+        addr := MemCpy(  Ord4(@kstr) + 1, data, base + 265, 4);
         kstr := kGroup;
-        addr := MemCpy(  Ord4(@kstr) + 1, data,          base + 297, 4);
+        addr := MemCpy(  Ord4(@kstr) + 1, data, base + 297, 4);
 
-        { Set header checksum. }
+        { Copy devmajor and devminor. }
+        kstr := kUid;
+        addr := MemCpy(  Ord4(@kstr) + 1, data, base + 329, 7);
+        addr := MemCpy(  Ord4(@kstr) + 1, data, base + 337, 7);
+
+        { Set header checksum and NUL immediately afterward. }
         TarCsum(Ord4(@data) + base);
+        data[base + 154] := 0;
     END;
 
     (* tar+YModem routines *)
