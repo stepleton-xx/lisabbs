@@ -132,22 +132,19 @@ IMPLEMENTATION
       somewhat gracefully }
     { Creates no output of its own }
     PROCEDURE OpPageGoto(VAR state: ShellState; page: Integer);
-    VAR
-        saw_final:  Boolean;
     BEGIN
-        saw_final := state.d_final;
         WHILE state.d_page <> page DO BEGIN
             OpPageNext(state);
             IF state.d_final THEN BEGIN
-                IF saw_final THEN BEGIN
+                IF state.d_page < page THEN BEGIN
                     { Strange: we've lapped around the entire directory listing
                       without returning to the prev_page; someone may have
                       deleted a whole bunch of files here, so we shrug and
                       loop around to the first page }
                     OpPageNext(state);
                     UiPutError(0, 'current directory modified unexpectedly?');
+                    Exit(OpPageGoto);
                 END;
-                saw_final := true;
             END;
         END;
     END;
@@ -166,6 +163,9 @@ IMPLEMENTATION
         { The page preceding the first page is the last page }
         IF state.d_page = 0 THEN BEGIN
             WHILE NOT state.d_final DO OpPageNext(state);
+            { And if this page has no entries, then we just gotta go around
+              again to the previous page... }
+            IF state.d_size = 0 THEN OpPagePrev(state);
             Exit(OpPagePrev);
         END;
 
