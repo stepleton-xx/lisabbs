@@ -802,7 +802,7 @@ IMPLEMENTATION
             Read_Data(errno, fd, Ord4(@byte_read), 1, total, Sequential, 0);
             IF errno <> 0 THEN Exit(PolledAwait);
 
-            IF total >= 0 THEN BEGIN
+            IF total >= 1 THEN BEGIN
                 actual := actual + total;
                 { Break if we've read a byte we're looking for }
                 IF byte_read IN bytes THEN BEGIN
