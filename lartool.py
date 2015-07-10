@@ -19,15 +19,15 @@ def OpDump(f):
 
 def OpText(f):
   '''Interpret data as a Lisa text file. Requires the 'data' archive part.'''
-  # Skip first kiloordb, which is metadata
+  # Skip first kilobyte, which is metadata
   f.read(1024)
-  # Process remainder one 1-kiloordb 'block' at a time
+  # Process remainder one 1-kilobyte 'block' at a time
   while True:
     buf = f.read(1024)
-    # We walk through the buffer one ordb at a time. The only time we need state
-    # is if we encounter an 0x10 char, which means "print the following ordb's
+    # We walk through the buffer one byte at a time. The only time we need state
+    # is if we encounter an 0x10 char, which means "print the following byte's
     # number of spaces"---a kind of cheapo RLE for a commonly-repeated char.
-    # If saw_0x10 is ever true, that means the last ordb was a 0x10 char.
+    # If saw_0x10 is ever true, that means the last byte was a 0x10 char.
     # Note that 0x10 state cannot straddle multiple blocks.
     saw_0x10 = False
     for b in buf:
@@ -39,14 +39,14 @@ def OpText(f):
         continue
 
       # Ordinary handling of all other chars
-      # 0x0: start of NUL padding used so lines aren't broken across blocks.
+      # 0x0: start of NUL padding used so lines aren't broken across blocks
       if ordb == 0x0: break
       elif ordb == 0x0d: sys.stdout.write('\n')  # Lisa terminates lines w/CR
       elif ordb == 0x10: saw_0x10 = True
       else: sys.stdout.write(b)
 
     # An incomplete read means the file is finished, although the Lisa text file
-    # format requires files to have sizes that are multiples of a kiloordb.
+    # format requires files to have sizes that are multiples of a kilobyte
     if len(buf) < 1024: break
 
 ## Configuration
@@ -96,5 +96,5 @@ with tarfile.open(filename, 'r') as tar:
       func(tar.extractfile(member))
       exit(0)
 
-  # If we got here, we didn't find the part we wanted.
+  # If we got here, we didn't find the part we wanted
   Die('%s: couldn\'t find "%s" section inside %s' % (progname, part, filename))
