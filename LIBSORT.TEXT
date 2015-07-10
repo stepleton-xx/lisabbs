@@ -1,0 +1,136 @@
+{ Generic quicksort for Lisa Pascal }
+UNIT StlSort;
+
+INTERFACE
+
+USES
+    {$U QD/QuickDraw}   QuickDraw;  { for Random }
+
+{ PROCEDURES AND FUNCTIONS }
+
+    { Quicksort }
+    { Given inclusive integer index bounds first..last in which all indices
+      are assumed to refer to distinct elements, a precedence function LessThan,
+      parameterized by two such indices, and an Exchange procedure that swaps
+      which elements are referred to by its two index parameters, this procedure
+      will direct the exchange of elements indexed by values in first..last
+      until those elements are in sorted order (as determined by the precedence
+      function) }
+    { Not guaranteed to run successfully or even terminate unless LessThan is
+      a StrictWeakOrdering }
+    { Not a stable sort }
+    PROCEDURE Sort(first, last: Integer;
+                   FUNCTION  LessThan(a, b: Integer): Boolean;
+                   PROCEDURE Exchange(a, b: Integer));
+
+    { Random shuffle: quick-un-sort }
+    { Given inclusive integer index bounds first..last in which all indices
+      are assumed to refer to distinct elements, and an Exchange procedure that
+      swaps which elements are referred to by its two index parameters, this
+      procedure will call Exchange randomly in such a way that results in
+      the elements being randomly permuted in an unbiased way (modulo bias in
+      the random number generator) }
+    { Uses the QuickDraw function Random, which can be seeded by setting the
+      variable randSeed (NB: InitGraf always resets this to 1) }
+    PROCEDURE Shuffle(first, last: Integer;
+                      PROCEDURE Exchange(a, b: Integer));
+
+IMPLEMENTATION
+
+    { Median-of-three pivot identification }
+    FUNCTION GetPivot(first, last: Integer;
+                      FUNCTION LessThan(a, b: Integer): Boolean): Integer;
+    VAR
+        mid: Integer;
+    BEGIN
+        { ASSERT(first - last > 1); }
+        mid := first + (last - first) DIV 2;
+        IF LessThan(first, last) THEN BEGIN
+                 IF LessThan(mid, first) THEN GetPivot := first
+            ELSE IF LessThan(mid, last)  THEN GetPivot := mid
+            ELSE                              GetPivot := last;
+        END ELSE
+        IF LessThan(last, first) THEN BEGIN
+                 IF LessThan(mid, last)  THEN GetPivot := last
+            ELSE IF LessThan(mid, first) THEN GetPivot := mid
+            ELSE                              GetPivot := first;
+        END ELSE
+        { last IS EQUAL TO first } BEGIN
+            GetPivot := first;  { Well, we should just pick one }
+        END;
+    END;
+
+    PROCEDURE Sort{first, last: Integer;
+                   FUNCTION  LessThan(a, b: Integer): Boolean;
+                   PROCEDURE Exchange(a, b: Integer)};
+    VAR
+        pyvot:     Integer;
+        left:      Integer;
+        right:     Integer;
+        ok:        Boolean;
+    BEGIN
+        { Recursive base cases }
+        IF      first >= last THEN Exit(Sort);
+        IF Succ(first) = last THEN BEGIN
+            IF LessThan(last, first) THEN Exchange(first, last);
+            Exit(Sort);
+        END;
+
+        { Identify the pivot and swap it with the first element }
+        pyvot := GetPivot(first, last, LessThan);
+        IF pyvot <> last THEN Exchange(last, pyvot);
+        { We spelled 'pyvot' funny because from now on, the pivot is the last
+          element in first..last, and we never want to refer to pyvot again }
+
+        { In-place partition }
+        left := first;
+        FOR right := first TO Pred(last) DO BEGIN
+            IF LessThan(right, last) THEN BEGIN
+                Exchange(left, right);
+                left := Succ(left);
+            END;
+        END;
+        Exchange(left, last);  { Move pivot to its place in the middle }
+
+        { Sort the left and right-hand sides of the interval recursively }
+        Sort(first,      Pred(left), LessThan, Exchange);
+        Sort(Succ(left),       last, LessThan, Exchange);
+    END;
+
+    PROCEDURE Shuffle{first, last: Integer;
+                      PROCEDURE Exchange(a, b: Integer)};
+    VAR
+        penult:  Integer;
+
+        { Selects a random number in the inclusive bounds first..last }
+        { Resamples if necessary to avoid modulo bias }
+        FUNCTION RandIn(first, last: Integer): Integer;
+        VAR
+            interval_size:  Integer;
+            bias_region:    Integer;
+            r:              Integer;
+        BEGIN
+            interval_size := last - first + 1;  { Inclusive bounds }
+            bias_region   := maxint - (maxint MOD interval_size);
+
+            REPEAT
+                r := Random;
+                IF r < 0 THEN r := Succ(r + maxint);
+            UNTIL r < bias_region;
+
+            RandIn := first + (r MOD interval_size);
+        END;
+
+    BEGIN
+        IF first >= last THEN Exit(Shuffle);
+
+        { Fisher-Yates shuffle }
+        penult := Pred(last);
+        WHILE first < penult DO BEGIN
+            Exchange(last, RandIn(first, penult));
+            last   := penult;
+            penult := Pred(last);
+        END;
+    END;
+
+END.
