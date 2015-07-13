@@ -91,7 +91,7 @@ TYPE
 
     { A set of ASCII values }
     { We'd allow any 8-bit byte, but SETs can't hold negative integers }
-    AsciiByteSet = SET OF Byte;
+    AsciiByteSet = SET OF 0..127;
 
 { PROCEDURES AND FUNCTIONS }
 
@@ -892,7 +892,7 @@ IMPLEMENTATION
                 IF t_now < t_start THEN IF t_now > t_end THEN GOTO 2222;
             END ELSE BEGIN
                 IF t_now > t_end   THEN GOTO 2222;
-                IF t_now < t_start THEN GOTO 2222; 
+                IF t_now < t_start THEN GOTO 2222;
             END;
 
             { Whence to read for the next write }

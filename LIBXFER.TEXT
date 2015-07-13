@@ -181,8 +181,8 @@ IMPLEMENTATION
     END;
 
     { Helper for YmTxFile: read (up to) 512 bytes of a file into a buffer }
-    { Notes; will not attempt to read beyond the file's LEOF }
-    { Args - file_fd: reference number of the file to read
+    { Notes: will not attempt to read beyond the file's LEOF }
+    { Args - file_fd: reference number of file to read
                 addr: address of buffer receiving data
                 stat: Fs_Info record for file referred to by fd
                total: File bytes read so far; will be incremented
@@ -194,8 +194,8 @@ IMPLEMENTATION
                         VAR total:  Longint;
                         VAR errno:  Integer);
     VAR
-        target: Longint;
-        actual: Longint;
+        target:  Longint;
+        actual:  Longint;
     BEGIN
         { Assume success by default }
         errno := 0;
@@ -209,7 +209,7 @@ IMPLEMENTATION
         Read_Data(errno, file_fd, addr, target, actual, Sequential, 0);
         IF (target <> actual) AND (errno = 0) THEN errno := -4;
 
-        { Update total }
+        { Update total; close file if total reached or error encountered }
         total := total + actual;
     END;
 
@@ -239,7 +239,7 @@ IMPLEMENTATION
                 512 (tar header) + 512 (filesystem metadata) +
                 512 (tar header) + 512 (file label data) +
                 512 (tar header) + N +
-                1024 (tar "footer" of all zeroes)
+                1024 (tar "footer" of all zeros)
               where N is the size of the file itself, rounded up to the nearest
               larger multiple of 512 }
             size := 3584 + 512 * (stat.size div 512);
@@ -297,7 +297,7 @@ IMPLEMENTATION
         progrezz := progrezz + 1024;
         ProgressCallback(errphase, progrezz, size, oopses);
 
-        bytes_read := 0                         { Beginning of file }
+        bytes_read := 0;                        { Beginning of file }
         DataHdrPacket(buffer, stat);
         unused := MemSet(buffer, 0, 3 + 512, 512);
         NextChunk(file_fd, YmDataAddr(buffer) + 512, stat, bytes_read, errno);
@@ -339,10 +339,10 @@ IMPLEMENTATION
         Close_Object(errno, file_fd);
         file_fd := -1;
 
-        { Send a zeroes packet, which is either the complete TAR file footer
+        { Send a zeros packet, which is either the complete TAR file footer
           or its last 512 bytes; note correct handling of progress tally }
         unused := MemSet(buffer, 0, 3, 1024);
-        seq = YmFinishPacket(buffer, seq, true {big!});
+        seq := YmFinishPacket(buffer, seq, true {big!});
         IF NOT YmRoundTrip(port_fd, buffer, oopses, errno) THEN Bail(file_fd);
         progrezz := progrezz + 512;
         IF progrezz MOD 1024 > 0 THEN progrezz := progrezz + 512;

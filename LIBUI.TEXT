@@ -55,7 +55,7 @@ VAR
     { Input file for echo-less keyboard input }
     kinput:      Text;
 
-    { Circular buffer of errors, and index of the next error slot }
+    { Circular buffer of errors, and index of next error slot }
     errors:      ARRAY [ErrBufIndex] OF DisplayLine;
     next_err:    ErrBufIndex;
 
@@ -200,7 +200,7 @@ IMPLEMENTATION
     BEGIN
         { First, the console display }
         { We only want to clear the first 24 lines }
-        FOR i := 0 TO 23 DO BEGIN;
+        FOR i := 0 TO 23 DO BEGIN
             GoToXY(0, i);
             ScreenCtr(CclearELine);
         END;
@@ -349,7 +349,7 @@ IMPLEMENTATION
 
         { Display errors }
         FOR i := 0 TO kErrBufIndexMax DO BEGIN
-            GoToXY(0, kRowIoErrors + i);
+            GoToXy(0, kRowIoErrors + i);
             ScreenCtr(CclearELine);
             Write(output, errors[(i + next_err) MOD (kErrBufIndexMax + 1)]);
         END;

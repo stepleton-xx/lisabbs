@@ -56,9 +56,10 @@ IMPLEMENTATION
         { Get_Working_Dir(errno, cwd);
           CheckWarn(errno, 'getting current working dir');
           IF errno <> 0 THEN Exit(RewindDirStream);
-          XdResetCatalog(errno, cwd);
+          Reset_Catalog(errno, cwd);
           CheckWarn(errno, 'rewinding directory stream'); }
-        { Delete following line and this comment, then uncomment above code
+        { Delete following line and this comment, uncomment above code, and
+          replace all Xd* calls in this file with their SysCall counterparts
           to use filesystem functions for directory stream rewinding }
         XdRewindDirStream(errno);
     END;
@@ -168,7 +169,7 @@ IMPLEMENTATION
         IF state.d_page = 0 THEN BEGIN
             WHILE NOT state.d_final DO OpPageNext(state);
             { And if this page has no entries, then we just gotta go around
-              again to the previous page... }
+              again to the previous page }
             IF state.d_size = 0 THEN OpPagePrev(state);
             Exit(OpPagePrev);
         END;
