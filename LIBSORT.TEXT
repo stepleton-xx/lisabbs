@@ -122,8 +122,6 @@ IMPLEMENTATION
         END;
 
     BEGIN
-        IF first >= last THEN Exit(Shuffle);
-
         { Fisher-Yates shuffle }
         penult := Pred(last);
         WHILE first < penult DO BEGIN
