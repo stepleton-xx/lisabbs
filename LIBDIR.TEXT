@@ -1,0 +1,295 @@
+{ Workalike for LisaOS directory streams that sorts file entries }
+{ WARNING: Uses the Pascal heap with global data---if you use the heap too,
+  we will trash your data, and you will trash ours! }
+{ WARNING: Changes the state of the directory stream---if you use the directory
+  stream too, related conflicts will occur! }
+UNIT XferDir;
+
+INTERFACE
+
+USES
+    {$U SysCall.Obj}        SysCall,
+    {$U PasLibCall.Obj}     PasLibCall,
+    {$U Xfer/LibSort.Obj}   StlSort;
+
+CONST
+    kEbSize    = 31;   { Number of filenames in a filename (p)block }
+    kLastEntry = 30;   { Index of last entry in a (p)block }
+    kNumBlocks = 256;  { Max number of filename (p)blocks }
+    kLastBlock = 255;  { Index of last filename (p)block }
+
+TYPE
+    { Space for directory entries is allocated in blocks }
+    EntryBlock = ARRAY [0..kLastEntry] OF E_Name;  { At or under 1K... maybe }
+    EbPtr      = ^EntryBlock;
+
+    EnPtr      = ^E_Name; { Used for pointers to EntryBlock members }
+
+    { We use the same trick for pointers to directory entries }
+    EnPtrBlock = ARRAY [0..kLastEntry] OF EnPtr;
+    EnpbPtr    = ^EnPtrBlock;
+
+VAR
+    { Array of pointers to filename (p)blocks, and count of blocks allocated }
+    blocks:  ARRAY [0..kLastBlock] OF EbPtr;
+    pblocks: ARRAY [0..kLastBlock] OF EnpbPtr;
+    num_blocks: Integer;
+
+    { Total number of entries stored in the allocated filename blocks }
+    num_entries: Integer;
+
+    { Path whose data currently resides in the (p)blocks }
+    path: Pathname;
+
+    { Index referring to the current position in our directory stream }
+    { Counts up from 0 }
+    next_entry: Integer;
+
+{ PROCEDURES AND FUNCTIONS }
+
+    { Initializer - must be called before using ANY other procedures }
+    { Calls XdResetCatalog on the current working directory so XdNextEntry
+      can be used right away }
+    { Errors can be any of those generated/returned by:
+        Get_Working_Dir
+        Reset_Catalog
+        Get_Next_Entry
+        Heapresult
+      except for 848 (end of directory listing) }
+    PROCEDURE XdInit(VAR errno: Integer);
+
+    { Change the current working directory; analogous to Reset_Catalog }
+    { Triggers an entire directory read and re-sort, so may not be quick }
+    { Errors can be any of those generated/returned by:
+        Reset_Catalog
+        Get_Next_Entry
+        Heapresult
+      except for 848 (end of directory listing) }
+    PROCEDURE XdResetCatalog(VAR errno: Integer; VAR new_path: Pathname);
+
+    { Rewinds the directory stream to the first entry (if any) }
+    { Corresponds to no system procedure, but still useful }
+    { Always succeeds }
+    PROCEDURE XdRewindDirStream(VAR errno: Integer);
+
+    { Retrieve the next entry in the directory stream }
+    { Always succeeds unless the end of the listing is reached, in which
+      case errno is set to 848 }
+    { Behavior after an 848 error is unspecified }
+    PROCEDURE XdGetNextEntry(VAR errno: Integer; VAR prefix, entry: E_Name);
+
+IMPLEMENTATION
+
+    PROCEDURE XdInit{VAR errno: Integer};
+    VAR
+        i:         Integer;
+        new_path:  Pathname;
+    BEGIN
+        num_blocks  := 0;
+        num_entries := 0;
+        next_entry  := 0;
+        FOR i := 0 TO kLastBlock DO BEGIN
+            blocks[i]  := nil;
+            pblocks[i] := nil;
+        END;
+
+        { Populate directory listings for the current working dir }
+        Get_Working_Dir(errno, new_path);
+        path := '';  { Since XdResetCatalog compares its new_path arg to path }
+        IF errno = 0 THEN XdResetCatalog(errno, new_path);
+    END;
+
+    { Helper: release ALL of the allocated filename (p)blocks in (p)blocks }
+    PROCEDURE FreeBlocks;
+    VAR
+        i:  Integer;
+    BEGIN
+        { Frees the first block and all that follow (in reverse order) }
+        { Since pblocks are always allocated after blocks, releases them too }
+        IF num_blocks > 0 THEN Release(blocks[0]);
+        FOR i := 0 TO (num_blocks - 1) DO BEGIN
+            blocks[i]  := nil;
+            pblocks[i] := nil;
+        END;
+        num_blocks  := 0;
+        num_entries := 0;
+    END;
+
+    { Helper: the comparison function for sorting pblock entries }
+    { Complex logic gives us an lexicographical ordering of tuples (s', s)
+      derived from the input strings, where s' is the input string in all
+      uppercase chars and s is the original string }
+    FUNCTION EpLessThan(a, b: Integer): Boolean;
+    VAR
+        aptr:   EnPtr;
+        bptr:   EnPtr;
+        alen:   Integer;
+        blen:   Integer;
+        i:      Integer;
+        ach:    Integer;
+        bch:    Integer;
+
+        FUNCTION Min(x, y: Integer): Integer;
+        BEGIN IF x < y THEN Min := x ELSE Min := y; END;
+
+    BEGIN
+        aptr := @pblocks[a DIV kEbSize]^[a MOD kEbSize]^;
+        bptr := @pblocks[b DIV kEbSize]^[b MOD kEbSize]^;
+        alen := Length(aptr^);
+        blen := Length(bptr^);
+
+        { UPPER-CASE comparison first }
+        FOR i := 1 TO Min(alen, blen) DO BEGIN
+            ach := Ord(aptr^[i]);
+            bch := Ord(bptr^[i]);
+            IF ach >= 97 THEN IF ach <= 122 THEN ach := ach - 32;  { A..Z }
+            IF bch >= 97 THEN IF bch <= 122 THEN bch := bch - 32;
+            IF ach < bch THEN BEGIN EpLessThan :=  true; Exit(EpLessThan); END;
+            IF ach > bch THEN BEGIN EpLessThan := false; Exit(EpLessThan); END;
+        END;
+
+        { Strings are the same case until one runs out of chars }
+        { If one string is shorter than the other, it wins }
+        IF alen < blen THEN BEGIN EpLessThan :=  true; Exit(EpLessThan); END;
+        IF alen > blen THEN BEGIN EpLessThan := false; Exit(EpLessThan); END;
+
+        { Strings are the same length, so only case differs }
+        EpLessThan := aptr^ < bptr^;
+    END;
+
+    { Helper: the exchange function for sorting pblock entries }
+    PROCEDURE EpExchange(a, b: Integer);
+    VAR
+        aptr:  ^EnPtr;
+        bptr:  ^EnPtr;
+        tmp:   EnPtr;
+    BEGIN
+        aptr := @pblocks[a DIV kEbSize]^[a MOD kEbSize];
+        bptr := @pblocks[b DIV kEbSize]^[b MOD kEbSize];
+        tmp := aptr^;
+        aptr^ := bptr^;
+        bptr^ := tmp;
+    END;
+
+    PROCEDURE XdResetCatalog{VAR errno: Integer; VAR new_path: Pathname};
+    LABEL
+        1111;
+    VAR
+        block:   ^EbPtr;
+        pblock:  ^EnpbPtr;
+        b:       Integer;
+        i:       Integer;
+        prefix:  E_Name;
+    BEGIN
+        { If we've already loaded the data for the desired path, don't reload,
+          just rewind to the top }
+        IF path = new_path THEN BEGIN
+            XdRewindDirStream(errno);
+            Exit(XdResetCatalog);
+        END;
+
+        { First, attempt to change directory; bail on failure }
+        Reset_Catalog(errno, new_path);
+        IF errno <> 0 THEN Exit(XdResetCatalog);
+
+        { Directory switched; we can liquidate old data and prepare for new }
+        FreeBlocks;
+        next_entry := 0;
+        path       := new_path;
+
+        { Read in a whole new directory }
+        prefix := '';
+        FOR b := 1 TO kNumBlocks DO BEGIN
+            { Allocate a new (p)block }
+            block  :=  @blocks[b - 1];
+            Mark( block^); errno := Heapresult; IF errno <> 0 THEN GOTO 1111;
+            New(  block^); errno := Heapresult; IF errno <> 0 THEN GOTO 1111;
+            pblock := @pblocks[b - 1];
+            Mark(pblock^); errno := Heapresult; IF errno <> 0 THEN GOTO 1111;
+            New( pblock^); errno := Heapresult; IF errno <> 0 THEN GOTO 1111;
+            num_blocks := b;
+
+            { Fill it with entries }
+            FOR i := 0 TO kLastEntry DO BEGIN
+                Get_Next_Entry(errno, prefix, block^^[i]);
+                IF errno <> 0 THEN BEGIN
+                    IF errno = 848 THEN errno := 0;  { End of dir; no problem }
+                    GOTO 1111;
+                END;
+                { For now, pblock pointers and block entries line up }
+                pblock^^[i] := @block^^[i];
+                num_entries := Succ(num_entries);
+            END;
+        END; 1111:
+
+        { Error or no error, we can at least sort whatever catalog entries
+          we did manage to read }
+        { For speed, the sort actually permutes the pblock pointers and not the
+          actual 32-char strings inside the blocks }
+        Sort(0, num_entries - 1, EpLessThan, EpExchange);
+    END;
+
+    PROCEDURE XdRewindDirStream{VAR errno: Integer};
+    BEGIN
+        next_entry := 0;
+        errno := 0;
+    END;
+
+    PROCEDURE XdGetNextEntry{VAR errno: Integer; VAR prefix, entry: E_Name};
+    LABEL
+        2222;
+    VAR
+        e_ptr:     EnPtr;
+        e_prefix:  E_Name;
+
+        { Abbreviates a frequent operation }
+        PROCEDURE ExitNoMoreEntries;
+        BEGIN
+            errno := 848;  { No more entries }
+            Exit(XdGetNextEntry);
+        END;
+
+    BEGIN
+        IF next_entry >= num_entries THEN ExitNoMoreEntries;
+
+        { Obtain a pointer to the next entry }
+        e_ptr := pblocks[next_entry DIV kEbSize]^[next_entry MOD kEbSize];
+
+        { If the user has specified a prefix, we'll need to step ahead to the
+          next entry with that prefix or return 848 if there are no more }
+        IF prefix <> '' THEN BEGIN
+            WHILE true DO BEGIN
+                { Copy the current entry's prefix to e_prefix, if it's even
+                  long enough }
+                IF length(e_ptr^) >= length(prefix) THEN BEGIN
+                    e_prefix := Copy(e_ptr^, 1, length(prefix));
+                END ELSE BEGIN
+                    e_prefix := ''
+                END;
+
+                { If the prefixes match, then we've found the next entry! }
+                IF prefix = e_prefix THEN GOTO 2222;
+
+                { If the current entry sorts after the desired prefix, then
+                  we're out of entries with matching prefixes }
+                { Note that this check MUST come after the prefix comparison }
+                IF e_ptr^ > prefix THEN ExitNoMoreEntries;
+
+                { Looks like we should keep scanning ahead, or stop if we've
+                  run out of entries altogether }
+                next_entry := Succ(next_entry);
+                IF next_entry >= num_entries THEN ExitNoMoreEntries;
+                e_ptr :=
+                    pblocks[next_entry DIV kEbSize]^[next_entry MOD kEbSize];
+            END; 2222:
+        END;
+
+        { Advance next entry index for the next call }
+        next_entry := Succ(next_entry);
+
+        { Success: copy entry and set success errno }
+        entry := e_ptr^;
+        errno := 0;
+    END;
+
+END.
