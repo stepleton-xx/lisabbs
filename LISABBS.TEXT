@@ -23,6 +23,16 @@ P{ascal}Xfer/LibXfer{--------------------}
 Xfer/LibXfer
 G{enerate}Xfer/LibXfer
 Xfer/LibXfer
+P{ascal}Xfer/LibSort{--------------------}
+{ No listing }
+Xfer/LibSort
+G{enerate}Xfer/LibSort
+Xfer/LibSort
+P{ascal}Xfer/LibDir{---------------------}
+{ No listing }
+Xfer/LibDir
+G{enerate}Xfer/LibDir
+Xfer/LibDir
 P{ascal}Xfer/LibUi{----------------------}
 { No listing }
 Xfer/LibUi
@@ -44,6 +54,8 @@ Xfer/LibAsm
 Xfer/LibPort
 Xfer/LibData
 Xfer/LibXfer
+Xfer/LibSort
+Xfer/LibDir
 Xfer/LibUi
 Xfer/LibShell
 Xfer/LisaBBS
