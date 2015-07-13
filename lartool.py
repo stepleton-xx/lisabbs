@@ -50,10 +50,13 @@ def OpText(f):
     if len(buf) < 1024: break
 
 ## Configuration
-# Mapping from verbs to the archive parts that they operate on
-part_for = dict(info='info', label='label', data='data', text='data')
-# Mapping from verbs to the operations that perform those verbs' actions
-func_for = dict(info=OpDump, label=OpDump, data=OpDump, text=OpText)
+# Mapping from verbs to
+# (a) the archive parts that they operate on
+# (b) the operations that perform verbs' actions
+lexicon = dict( info=('info',  OpDump),
+               label=('label', OpDump),
+                data=('data',  OpDump),
+                text=('data',  OpText))
 
 
 ##
@@ -83,13 +86,12 @@ if len(sys.argv) != 3: BadUsage()
 verb     = sys.argv[1].lower()
 filename = sys.argv[2]
 
-if verb not in {'info', 'label', 'data', 'text'}: BadUsage()
+if verb not in lexicon: BadUsage()
 
 ## Read the "Lisa Archive" file and perform operation on selected contents
 with tarfile.open(filename, 'r') as tar:
   # Scan to the archive part we're interested in
-  part = part_for[verb]
-  func = func_for[verb]
+  part, func = lexicon[verb]
   for member in tar:
     if member.name.endswith('.' + part):
       # Perform selected operation on that part
