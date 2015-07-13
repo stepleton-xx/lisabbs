@@ -7,6 +7,7 @@ USES
     {$U SysCall.Obj}        SysCall,
     {$U PasLibCall.Obj}     PasLibCall,
     {$U Xfer/LibAsm.Obj}    XferAsm,
+    {$U Xfer/LibDir.Obj}    XferDir,
     {$U Xfer/LibPort.Obj}   XferPort,
     {$U Xfer/LibUi.Obj}     XferUi,
     {$U Xfer/LibXfer.Obj}   XferXfer;
@@ -49,14 +50,17 @@ IMPLEMENTATION
 
     { Helper: rewind to the beginning of the directory stream }
     PROCEDURE RewindDirStream(VAR errno: Integer);
-    VAR
-        cwd:  Pathname;
+    { VAR
+          cwd:  Pathname; }
     BEGIN
-        Get_Working_Dir(errno, cwd);
-        CheckWarn(errno, 'getting current working dir');
-        IF errno <> 0 THEN Exit(RewindDirStream);
-        Reset_Catalog(errno, cwd);
-        CheckWarn(errno, 'rewinding directory stream');
+        { Get_Working_Dir(errno, cwd);
+          CheckWarn(errno, 'getting current working dir');
+          IF errno <> 0 THEN Exit(RewindDirStream);
+          XdResetCatalog(errno, cwd);
+          CheckWarn(errno, 'rewinding directory stream'); }
+        { Delete following line and this comment, then uncomment above code
+          to use filesystem functions for directory stream rewinding }
+        XdRewindDirStream(errno);
     END;
 
     { Shows the current page of directory entries }
@@ -111,7 +115,7 @@ IMPLEMENTATION
         prefix := '';  { The wildcard is always '*' }
         FOR i := 1 TO 20 DO BEGIN
             state.d_entry[i] := '';
-            Get_Next_Entry(errno, prefix, state.d_entry[i]);
+            XdGetNextEntry(errno, prefix, state.d_entry[i]);
             IF errno = 848 THEN BEGIN  { Out of directory entries }
                 state.d_final := true;  { Mark that this is the last page }
                 GOTO 1111;
@@ -366,7 +370,7 @@ IMPLEMENTATION
         prefix := '';
 
         name := '';
-        Get_Next_Entry(errno, prefix, name);
+        XdGetNextEntry(errno, prefix, name);
         IF errno = 848 THEN BEGIN  { Out of directory entries }
             NextAnyFile := false;
         END ELSE BEGIN
@@ -622,6 +626,14 @@ IMPLEMENTATION
         state.tagged := [];     { No entries are tagged }
         state.n_tags := 0;
         action := kActNext;     { We will need to show a new page of files }
+
+        { Initialize sorted directory stream wrapper }
+        UiPutStatus('Scanning current directory...');
+        XdInit(errno);
+        IF errno <> 0 THEN BEGIN
+            UiPutError(errno, 'performing startup directory scan');
+            Halt;
+        END;
 
         { Wait for a key from the user before we begin }
         UiPutStatus('Ready! Awaiting any keypress to start UI loop...');
