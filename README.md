@@ -34,15 +34,15 @@ Page 1 of -SLOT2CHAN1, 0 tagged
 
 ## Status
 
-Early release. Plenty of bugs. Transfer one file at a time only. Developed in
-version 1.0 of the Lisa Pascal Workshop; compatibility with later releases
+Very early release. Plenty of bugs. Transfer one file at a time only. Developed
+in version 1.0 of the Lisa Pascal Workshop; compatibility with later releases
 is unknown.
 
 ## Installation
 
 * Copy `TEXT` files to an installation of the Lisa Pascal Workshop, but give
   them all the prefix `XFER/`. Thus, `LIBSORT.TEXT` becomes `XFER/LIBSORT.TEXT`.
-* At the Workshop command prompt, type `R<XFER/LisaBBS()i`. The newly compiled
+* At the Workshop command prompt, type `R <XFER/LisaBBS()i`. The newly compiled
   binary is named `XFER/LisaBBS_exe.Obj`.
 
 ## Usage
@@ -53,4 +53,31 @@ is unknown.
   [_Basic Lisa Utility_ manual](http://sigmasevensystems.com/blumanual.html).
 * Configure the "remote" computer's terminal program for 9600 BPS, 8N1,
   hardware handshaking, no software handshaking.
-* To start LisaBBS, at the Workshop command prompt, type `RXFER/LisaBBS_exe`.
+* To start LisaBBS, at the Workshop command prompt, type `R XFER/LisaBBS_exe`.
+* The interface shown above appears simultaneously on the Lisa display and
+  on your terminal. Press SPACE or N(ext) to cycle through the directory
+  listing. Press T to tag or un-tag individual files, and S to transmit tagged
+  files from the Lisa using YMODEM. (_NOTE: At the moment, multi-file send seems
+  buggy---you'll have to tag and send files one at a time. But the bug could
+  be in my terminal program's YMODEM, who knows._)
+
+Downloaded files are not the "raw" file bytes on disk---instead, they are
+tar archives created on the fly with three files inside:
+
+* an `info` file, a text file containing basic Lisa filesystem file metadata
+  (modification times and so forth). This information is derived from the
+  `Fs_Info` structure returned by Lisa OS's `INFO` system call (think `struct
+  stat` on Unix).
+* a `label` file, containing the 128-byte user- or program-provided "label" data
+  associated with the file.
+* a `data` file, holding all of the data within the file itself.
+
+These archives are sometimes called "Lisa Archives" or "lar" files in the code.
+The Python program `lartool.py` provides a handy command-line interface for
+accessing these file parts. For Lisa-format text files (which are not like
+text files as we know them today), `lartool.py` can convert the information
+in the archive to ordinary text data.
+
+## Caveats
+
+* Multi-file YMODEM doesn't work.
