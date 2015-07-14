@@ -80,4 +80,22 @@ in the archive to ordinary text data.
 
 ## Caveats
 
-* Multi-file YMODEM doesn't work.
+* Multi-file YMODEM doesn't work. Tag only one file at a time, and don't even
+  bother with "send All".
+* Some YMODEM bugs may require some packets to be resent, but so far all files
+  seem to come through just fine.
+* Protected files (e.g. `Pascal.obj`) can't be sent, because the files
+  themselves can't be opened (the OS won't let you do that).
+* No idea what happens when you try and send a named pipe. Probably something
+  gross. Not eager to try.
+* LisaBBS will not tell you what items in its file listings are protected or
+  named pipes.
+* The code that changes the working directory has a bug in its input routine.
+  You probably won't be able to change directories.
+
+## Potentially useful elsewhere
+
+`LIBPORT.TEXT` is a handy library for configuring and opening the Lisa serial
+port.
+
+`LIBSORT.TEXT` is a generic Quicksort implementation in Pascal.
